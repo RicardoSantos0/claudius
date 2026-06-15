@@ -1,0 +1,107 @@
+# MAS Skill Trigger Policy
+# Defines when skill use is recommended or required.
+# All rule IDs must be stable — do not rename once published.
+# Rule structure: when (deterministic conditions) -> recommend (skill + required flag + reason)
+version: "1.0"
+skill_trigger_policy:
+  rules:
+    - id: skill-review-on-resume
+      when:
+        event: project_resume
+      recommend:
+        skill: mas-review
+        required: true
+        reason: Must review state, pending handoffs, and stale context when resuming a project.
+
+    - id: skill-plan-before-execution
+      when:
+        phase: planning
+        missing_artifact: planning/execution_plan.yaml
+      recommend:
+        skill: mas-plan
+        required: true
+        reason: Must maintain a current execution plan before entering execution.
+
+    - id: skill-clarify-open-questions
+      when:
+        state_path_non_empty: decisions.open_questions
+      recommend:
+        skill: mas-clarify
+        required: true
+        reason: Must categorize open questions before proceeding.
+
+    - id: skill-examine-before-policy-or-runtime-change
+      when:
+        touched_paths_any:
+          - mas/policies/**
+          - agents/**
+          - skills/**
+          - mas/core/**
+      recommend:
+        skill: mas-examine
+        required: true
+        reason: Must run read-only examination before policy, agent, skill, or core runtime modification.
+
+    - id: skill-document-on-phase-close
+      when:
+        event: phase_close
+      recommend:
+        skill: mas-document
+        required: true
+        reason: Must produce durable documentation at phase close.
+
+    - id: skill-postmortem-on-evaluation-fail
+      when:
+        status: "eval:fail"
+      recommend:
+        skill: mas-postmortem
+        required: true
+        reason: Must complete a postmortem after evaluation failure before retry or closure.
+
+    # --- General-skill integration (proj-YYYYMMDD-NNN) ---
+    # These reach the primary manual Claude Code mode (the trigger block is injected into
+    # every assembled prompt), so notebooklm/graphify/skill-builder are no longer invisible
+    # outside the autonomous loop. They are RECOMMENDED (not required) and phase-scoped to
+    # keep prompt signal clean.
+
+    - id: skill-graphify-on-planning
+      when:
+        phase: planning
+      recommend:
+        skill: graphify
+        required: false
+        reason: Build or query a knowledge graph of the target area to navigate it quickly (architecture, file relationships) before decomposing execution.
+
+    - id: skill-builder-on-capability-discovery
+      when:
+        phase: capability_discovery
+      recommend:
+        skill: skill-builder
+        required: false
+        reason: Before defaulting to an agent spawn, evaluate whether the capability gap is better filled by a new or improved skill (skill-or-agent decision).
+
+    - id: skill-notebooklm-ground-specification
+      when:
+        phase: specification
+      recommend:
+        skill: notebooklm
+        required: false
+        reason: Ground key claims, prior art, and domain constraints in source-cited NotebookLM answers before finalizing the spec.
+
+    # markitdown is a globally-installed converter exposed via the /markitdown command
+    # (commands/markitdown.md), not a repo skills/ package — so it is surfaced as a trigger
+    # nudge only (NOT in SKILL_ACCESS / the registry skills list). Extension-scoped so it
+    # fires exactly when document inputs are in play, not broadly. (proj-YYYYMMDD-NNN scope change)
+    - id: skill-markitdown-on-document-inputs
+      when:
+        touched_paths_any:
+          - "*.pdf"
+          - "*.docx"
+          - "*.pptx"
+          - "*.xlsx"
+          - "*.xlsm"
+          - "*.csv"
+      recommend:
+        skill: markitdown
+        required: false
+        reason: Convert document inputs (PDF/DOCX/PPTX/XLSX/CSV) to Markdown with /markitdown before reasoning over them, to avoid hallucinating over binary formats.

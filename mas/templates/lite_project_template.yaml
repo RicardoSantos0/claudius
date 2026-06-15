@@ -1,0 +1,96 @@
+# ============================================================
+# LITE PROJECT TEMPLATE
+# Compressed workflow for small-scope projects:
+#   - ≤5 file changes
+#   - Single-concern fixes (bug, config, text normalisation)
+#   - No new agents, no external API changes, no architecture decisions
+#
+# Collapses intake + specification into one step.
+# Skips: consultant review phase, capability discovery (HR).
+# Still requires: shared_state.yaml, product_plan.yaml,
+#                 execution_plan.yaml, project_evaluation.yaml.
+#
+# DO NOT USE for: spawning, architecture decisions, external API
+# changes, scope that is unclear at intake, or >5 file changes.
+# ============================================================
+
+lite_project:
+  version: "1.0"
+
+  # ============================================================
+  # PHASE 1 — INTAKE + SPECIFICATION (collapsed)
+  # Written by Master Orchestrator directly. No Inquirer needed.
+  # ============================================================
+  intake_and_spec:
+    project_id: ""                    # proj-YYYYMMDD-NNN-slug
+    request_id: ""                    # req-YYYYMMDDHHMMSS
+    created_at: ""                    # ISO 8601
+    brief_summary: ""                 # ≤300 chars — the user's ask
+
+    problem_statement: ""             # What is broken / inconsistent?
+    scope:
+      files_to_change: []             # Explicit list of file paths — max 5
+      exclusions: []                  # What is explicitly NOT touched
+    success_criteria: []              # How we verify it's done
+    constraints: []                   # Any limits (e.g. no breaking changes)
+
+    assumptions: []                   # What is assumed without Q&A
+    exit_artifact: "planning/product_plan.yaml"
+
+  # ============================================================
+  # PHASE 2 — PLANNING (product + execution plan, combined)
+  # Written by Master Orchestrator directly. No PM agent needed.
+  # Saved to: mas/projects/{project_id}/planning/product_plan.yaml
+  # ============================================================
+  product_plan:
+    goals: []                         # What "done" looks like
+    must_have: []                     # Non-negotiable requirements
+    should_have: []                   # Important but not blocking
+    out_of_scope: []                  # Explicit exclusions
+    acceptance_criteria: []           # Testable pass/fail criteria
+    test_strategy:
+      test_first_required: true        # Tests are defined before development
+      acceptance_test_specs: []        # One executable test spec per acceptance criterion
+    risks: []                         # Known risks with mitigations
+
+  # ============================================================
+  # PHASE 3 — EXECUTION PLAN
+  # Saved to: mas/projects/{project_id}/planning/execution_plan.yaml
+  # ============================================================
+  execution_plan:
+    delivery_agent: ""                # e.g. canonical_engineer
+    tasks: []
+    # Each task:
+    #   id: task-001
+    #   description: ""
+    #   file: ""                      # Exact file path
+    #   change_type: ""               # edit | create | delete
+    #   acceptance: ""                # How to verify this task is done
+    #   dependencies: []              # Implementation tasks depend on test-definition task IDs
+    test_definition_tasks: []          # Must come before implementation tasks
+    test_command: ""                  # Command to run after all tasks
+
+  # ============================================================
+  # PHASE 4 — DELIVERY (no template — agent executes tasks)
+  # Master verifies each claimed file exists on disk before
+  # marking delivery complete.
+  # ============================================================
+
+  # ============================================================
+  # PHASE 5 — EVALUATION (lightweight)
+  # Saved to: mas/projects/{project_id}/evaluation/project_evaluation.yaml
+  # ============================================================
+  project_evaluation:
+    evaluated_at: ""                  # ISO 8601
+    test_result: ""                   # pass | fail | partial
+    test_output_summary: ""           # Last N lines of test run
+    files_changed: []                 # Verified on disk
+    acceptance_criteria_met: []       # Per acceptance_criteria above
+    acceptance_criteria_failed: []
+    overall_rating: ""                # excellent | good | acceptable | poor
+    notes: ""
+
+  # ============================================================
+  # CLOSURE
+  # Scribe writes CHECKPOINT.md and marks current_phase: closed.
+  # ============================================================

@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://claude-config/mas/foundation/schemas/agent_registry.schema.json",
+  "title": "Agent Registry",
+  "description": "Schema for mas/roster/registry_index.yaml — the canonical MAS agent registry.",
+  "type": "object",
+  "required": ["agents"],
+  "properties": {
+    "agents": {
+      "type": "object",
+      "description": "Map of MAS internal agent ID (snake_case) to agent descriptor.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["file", "claude_name", "trust_tier", "status", "domains", "roles"],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Relative path to the agent .md file from repo root.",
+            "pattern": "^agents/[a-z0-9_]+\\.md$"
+          },
+          "claude_name": {
+            "type": "string",
+            "description": "Claude Code-facing agent name — must be lowercase hyphenated.",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "trust_tier": {
+            "type": "string",
+            "enum": ["T0", "T1", "T2", "T3"],
+            "description": "MAS trust tier."
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "inactive", "deprecated", "experimental"],
+            "description": "Agent status."
+          },
+          "model": {
+            "type": "string",
+            "description": "Model assignment for this agent.",
+            "enum": ["opus", "sonnet", "haiku", ""]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["Read", "Grep", "Glob", "Bash", "Agent", "Edit", "WebFetch", "WebSearch", "Write", "TodoWrite", "TodoRead"]
+            },
+            "description": "Authorized tools for this agent."
+          },
+          "domains": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "Capability domains this agent covers."
+          },
+          "roles": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1,
+            "description": "MAS roles this agent performs."
+          },
+          "human_invocable": {
+            "type": "boolean",
+            "description": "Whether this agent can be directly invoked by a human."
+          },
+          "can_spawn": {
+            "type": "boolean",
+            "description": "Whether this agent is authorized to spawn new agents."
+          },
+          "can_write_state": {
+            "type": "boolean",
+            "description": "Whether this agent can write to shared_state.yaml."
+          },
+          "can_transition_phase": {
+            "type": "boolean",
+            "description": "Whether this agent can advance the project phase."
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"],
+            "description": "Risk level associated with this agent's actions."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

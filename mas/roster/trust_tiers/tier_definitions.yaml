@@ -1,0 +1,33 @@
+# ============================================================
+# TRUST TIER DEFINITIONS
+# Runtime tier assignments. Source of truth for which agents
+# are in which tier. Updated by Master Orchestrator only.
+# ============================================================
+
+# See policies/trust_tier_policy.yaml for the rules.
+# This file tracks current assignments.
+
+tier_assignments:
+  T0_core:
+    - "master_orchestrator"
+    - "hr_agent"
+    - "scribe_agent"
+
+  T1_established:
+    - "product_manager_agent"
+    - "project_manager_agent"
+    - "evaluator_agent"
+    - "risk_advisor"
+    - "quality_advisor"
+    - "devils_advocate"
+    - "domain_expert"
+    - "efficiency_advisor"
+
+  T2_supervised:
+    - "trainer_agent"
+    - "spawner_agent"
+
+  T3_provisional: []  # Populated when agents are spawned
+
+last_updated: ""
+updated_by: "system"  # Initial bootstrap

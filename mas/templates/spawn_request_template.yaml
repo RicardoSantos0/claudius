@@ -1,0 +1,30 @@
+# ============================================================
+# SPAWN REQUEST TEMPLATE
+# Submitted to Spawner after Master approves a gap certificate.
+# ============================================================
+
+spawn_request:
+  request_id: ""                # spawn-{project_id}-{sequence}
+  project_id: ""
+  timestamp: ""                 # ISO 8601
+
+  gap_certificate_id: ""        # Must reference an approved certificate
+  requested_by: ""              # hr_agent (always)
+  master_approval: false        # Must be true before Spawner acts
+
+  # --- CAPABILITY SPECIFICATION ---
+  agent_purpose: ""             # One-sentence mission
+  required_inputs: []           # What the agent will receive
+  required_outputs: []          # What the agent must produce
+  allowed_tools: []             # Minimum tool set (least privilege)
+  scope: "project_scoped"       # project_scoped | reusable
+
+  # --- TEMPLATE PREFERENCE ---
+  base_template: null           # execution_agent | analysis_agent | utility_agent | null
+
+  # --- RESULT ---
+  spawner_decision: null        # do_not_spawn | spawn_draft_only | spawn_and_verify
+  spawner_rationale: ""
+  agent_package_path: null      # Path to generated package
+  verification_required: true
+  verification_status: null     # pending | passed | failed

@@ -1,0 +1,365 @@
+agents:
+  master_orchestrator:
+    file: agents/master_orchestrator.md
+    claude_name: master-orchestrator
+    trust_tier: T0
+    status: active
+    model: opus
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Bash
+    - Agent
+    domains:
+    - orchestration
+    - governance
+    - planning
+    - delegation
+    roles:
+    - coordinator
+    - phase-manager
+    - decision-maker
+    human_invocable: true
+    can_spawn: true
+    can_write_state: true
+    can_transition_phase: true
+    risk_level: critical
+  scribe_agent:
+    file: agents/scribe_agent.md
+    claude_name: scribe-agent
+    trust_tier: T0
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Write
+    - Grep
+    - Glob
+    - Bash
+    - Edit
+    domains:
+    - documentation
+    - record-keeping
+    - artifact-tracking
+    roles:
+    - recorder
+    - archivist
+    human_invocable: false
+    can_spawn: false
+    can_write_state: true
+    can_transition_phase: false
+    risk_level: low
+  hr_agent:
+    file: agents/hr_agent.md
+    claude_name: hr-agent
+    trust_tier: T0
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - capability-discovery
+    - roster-management
+    - gap-certification
+    roles:
+    - capability-assessor
+    - deployment-planner
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: medium
+  inquirer_agent:
+    file: agents/inquirer_agent.md
+    claude_name: inquirer-agent
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - intake
+    - requirements-elicitation
+    - specification
+    roles:
+    - intake-specialist
+    - clarifier
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  product_manager_agent:
+    file: agents/product_manager_agent.md
+    claude_name: product-manager-agent
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - product-planning
+    - requirements
+    - acceptance-criteria
+    roles:
+    - product-owner
+    - requirements-author
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  project_manager_agent:
+    file: agents/project_manager_agent.md
+    claude_name: project-manager-agent
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - execution-planning
+    - task-decomposition
+    - milestone-tracking
+    roles:
+    - planner
+    - delivery-coordinator
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  evaluator_agent:
+    file: agents/evaluator_agent.md
+    claude_name: evaluator-agent
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - performance-evaluation
+    - metric-scoring
+    - pattern-detection
+    roles:
+    - evaluator
+    - quality-gate
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: medium
+  trainer_agent:
+    file: agents/trainer_agent.md
+    claude_name: trainer-agent
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - TodoWrite
+    - Bash
+    domains:
+    - improvement-proposals
+    - training-analysis
+    - backlog-management
+    roles:
+    - trainer
+    - improvement-proposer
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  spawner_agent:
+    file: agents/spawner_agent.md
+    claude_name: spawner-agent
+    trust_tier: T2
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Grep
+    - Glob
+    - Edit
+    - Bash
+    domains:
+    - agent-design
+    - spawn-policy
+    - capability-packaging
+    roles:
+    - agent-designer
+    - spawner
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: high
+  risk_advisor:
+    file: agents/risk_advisor.md
+    claude_name: risk-advisor
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    domains:
+    - risk-analysis
+    - failure-mode-analysis
+    - mitigation-planning
+    roles:
+    - consultant
+    - risk-reviewer
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  quality_advisor:
+    file: agents/quality_advisor.md
+    claude_name: quality-advisor
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    domains:
+    - quality-review
+    - completeness-check
+    - testability
+    roles:
+    - consultant
+    - quality-reviewer
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  devils_advocate:
+    file: agents/devils_advocate.md
+    claude_name: devils-advocate
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    domains:
+    - assumption-challenging
+    - alternative-perspectives
+    - blind-spot-detection
+    roles:
+    - consultant
+    - challenger
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  domain_expert:
+    file: agents/domain_expert.md
+    claude_name: domain-expert
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    domains:
+    - domain-knowledge
+    - best-practices
+    - prior-art
+    roles:
+    - consultant
+    - domain-specialist
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  efficiency_advisor:
+    file: agents/efficiency_advisor.md
+    claude_name: efficiency-advisor
+    trust_tier: T1
+    status: active
+    model: haiku
+    tools:
+    - Read
+    domains:
+    - efficiency-analysis
+    - overengineering-detection
+    - cost-estimation
+    roles:
+    - consultant
+    - simplification-advisor
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  session_scheduler:
+    file: agents/session_scheduler.md
+    claude_name: session-scheduler
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Bash
+    domains:
+    - session-resume
+    - project-lock
+    - checkpoint-resume
+    roles:
+    - scheduler
+    - session-manager
+    human_invocable: false
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: low
+  reliability_engineer:
+    file: agents/reliability_engineer.md
+    claude_name: reliability-engineer
+    trust_tier: T1
+    status: active
+    model: sonnet
+    tools:
+    - Read
+    - Write
+    - Edit
+    - Bash
+    - Grep
+    domains:
+    - ci-baseline-setup
+    - coverage-gate-enforcement
+    - golden-fixtures
+    roles:
+    - delivery-engineer
+    - reliability-specialist
+    human_invocable: true
+    can_spawn: false
+    can_write_state: false
+    can_transition_phase: false
+    risk_level: medium

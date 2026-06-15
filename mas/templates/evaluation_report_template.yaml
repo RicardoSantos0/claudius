@@ -1,0 +1,48 @@
+# ============================================================
+# EVALUATION REPORT TEMPLATE
+# Produced by Evaluator Agent after project completion.
+# ============================================================
+
+evaluation_report:
+  report_id: ""                 # eval-{project_id}-{timestamp}
+  project_id: ""
+  evaluated_at: ""              # ISO 8601
+  evaluated_by: "evaluator_agent"
+
+  # --- PROJECT METRICS ---
+  project_metrics:
+    goal_achievement: 0         # 0-100
+    acceptance_criteria_pass_rate: 0.0   # 0.0-1.0
+    handoff_acceptance_rate: 0.0         # 0.0-1.0
+    documentation_completeness: 0.0      # 0.0-1.0
+    boundary_violation_count: 0
+
+  # --- QUALITATIVE FINDINGS ---
+  quality_findings: []          # [{finding_id, agent_id, description, severity, recommendation}]
+
+  # --- AGENT EVALUATIONS ---
+  agent_evaluations: []
+  # Each entry:
+  #   agent_id: ""
+  #   tasks_assigned: 0
+  #   tasks_completed: 0
+  #   handoff_acceptance_rate: 0.0
+  #   boundary_violations: 0
+  #   decision_quality_score: 0
+  #   exemplary_outputs: []
+  #   probation_flag: false
+  #   summary: ""
+
+  # --- TOKEN USAGE ---
+  token_usage:
+    total_tokens: 0
+    by_agent: {}
+
+  # --- PATTERNS ---
+  systemic_patterns: []         # Patterns observed across the project
+
+  # --- SUMMARY ---
+  overall_rating: ""            # excellent | good | acceptable | poor
+  key_strengths: []
+  key_weaknesses: []
+  recommendations_for_trainer: []

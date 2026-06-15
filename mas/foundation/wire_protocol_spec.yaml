@@ -1,0 +1,250 @@
+# ============================================================
+# MAS Wire Protocol Specification v1.0
+# ============================================================
+# Defines the structured inter-agent communication format.
+# Implementation: mas/core/wire_protocol.py
+#
+# RULE: Wire format is agent-to-agent only.
+#       Inquirer ↔ human stays natural language.
+#       Non-compliance = metric warning, never governance violation.
+# ============================================================
+
+version: "1.0"
+created: "2026-04-10"
+project: "proj-YYYYMMDD-NNN-commsopt"
+
+# ---------------------------------------------------------------------------
+# Core principles
+# ---------------------------------------------------------------------------
+principles:
+  - "Every wire message carries a _v version field"
+  - "Status is a compact code: 'section:outcome' (e.g. task:complete)"
+  - "Human-facing output always uses expand() before rendering"
+  - "Reasoning field (rsn) is optional, max 100 words"
+  - "Empty lists and null values are omitted"
+  - "Unknown fields pass through unchanged (forward compatibility)"
+  - "Non-compliance triggers a metric warning, never a governance violation"
+
+# ---------------------------------------------------------------------------
+# Field name mappings: expanded → compact
+# ---------------------------------------------------------------------------
+field_map:
+  # Payload fields
+  summary:                      s
+  artifacts_produced:           art
+  decisions_made:               dec
+  open_questions:               oq
+  constraints_for_next:         con
+  shared_state_fields_modified: mod
+  findings:                     f
+  risk_level:                   rl
+  recommendation:               rec
+  key_concerns:                 kc
+  reasoning:                    rsn
+  status:                       st
+  action:                       act
+  path:                         path
+  data:                         d
+  deployment_plan:              deploy       # HR agent only: ordered list of {need, status, agent, task, payload, note}
+  next_agent:                   next_agent   # single agent delegation target
+  next_agents:                  next_agents  # parallel agent list — triggers concurrent dispatch
+  skill_request:                sk_req       # request a MAS skill invocation
+  skill_used:                   sk_used      # skills used while producing this output
+
+# ---------------------------------------------------------------------------
+# Finding item schema (used in findings arrays)
+# ---------------------------------------------------------------------------
+finding_schema:
+  path:   path   # dot-path to the field in question (e.g. "scope.exclusions")
+  status: st     # one of: ok | ambiguous | missing | conflicting | unclear
+  action: act    # one of: clarify | ask | resolve | accept | reject
+
+# ---------------------------------------------------------------------------
+# Status code vocabulary
+# ---------------------------------------------------------------------------
+status_codes:
+
+  # Inquirer
+  spec_analysis:ok:           "Spec analyzed — all fields present and clear"
+  spec_analysis:incomplete:   "Spec missing critical fields"
+  clarification:complete:     "All clarification rounds done"
+  clarification:pending:      "Clarification rounds in progress"
+
+  # Product Manager
+  product_plan:ready:         "Product plan produced and ready for approval"
+  product_plan:revision:      "Product plan revised per feedback"
+  spec:ready:                 "Specification written and complete"
+
+  # HR Agent
+  capability:match:           "Required capability found in registry"
+  capability:gap:             "Gap found — gap certificate issued"
+  capability:no_gaps:         "No capability gaps — all covered"
+  capability:plan_ready:      "DeploymentPlan produced — all needs resolved (ready or gap_certified)"
+
+  # Project Manager
+  exec_plan:ready:            "Execution plan compiled"
+  milestone:complete:         "Milestone — all tasks completed"
+  task:complete:              "Task completed successfully"
+  task:blocked:               "Task blocked — dependency or resource issue"
+  task:failed:                "Task failed — requires intervention"
+
+  # Evaluator
+  eval:report_ready:          "Evaluation report produced"
+  eval:pass:                  "Project passed evaluation"
+  eval:fail:                  "Project failed evaluation — issues found"
+
+  # Trainer
+  training:proposals_ready:   "Training proposals generated"
+  training:backlog_updated:   "Training backlog updated"
+
+  # Scribe
+  scribe:folder_ready:        "Project folder initialized"
+  scribe:recorded:            "Event recorded in project memory"
+
+  # Spawner
+  spawn:package_ready:        "Agent package built and ready for review"
+  spawn:rejected:             "Spawn request rejected"
+
+  # Consultants
+  consult:approve:            "Recommends approval"
+  consult:caution:            "Recommends approval with caveats"
+  consult:oppose:             "Recommends against"
+
+  # Generic
+  ok:                         "Operation completed successfully"
+  error:                      "Operation failed"
+  pending:                    "Operation in progress"
+  escalate:                   "Human escalation required"
+
+# ---------------------------------------------------------------------------
+# Message type schemas (per agent output type)
+# ---------------------------------------------------------------------------
+message_schemas:
+
+  handoff_payload:
+    required: [s]             # status code
+    optional: [art, dec, oq, con, mod, f, d, next_agent, next_agents]
+    notes:
+      - "Use next_agent (string) to delegate to a single agent"
+      - "Use next_agents (list) to trigger concurrent parallel dispatch — all listed agents receive pending handoffs simultaneously"
+      - "next_agents and next_agent are mutually exclusive; next_agents takes precedence"
+    example:
+      _v: "1.0"
+      s: "task:complete"
+      art: ["mas/core/token_counter.py"]
+      dec: [{id: "d-001", v: "char_over_4_heuristic"}]
+
+  master_delegation_parallel:
+    description: "Master emits this when dispatching multiple agents concurrently"
+    required: [s, next_agents]
+    optional: [art, dec, rsn]
+    example:
+      _v: "1.0"
+      s: "task:delegated"
+      next_agents: ["code_agent", "test_agent"]
+      rsn: "code_agent writes the module; test_agent writes tests — no data dependency between them"
+
+  skill_invocation:
+    description: "Agent requests a skill before the next orchestration decision"
+    required: [s, sk_req]
+    optional: [rsn, sk_used]
+    notes:
+      - "Use skill_request or compact sk_req; parser accepts both."
+      - "Use skill_used or compact sk_used to report completed skill usage."
+      - "sk_req shape: {name, query, required}; skill is accepted as an alias for name."
+    example:
+      _v: "1.0"
+      s: "task:blocked"
+      sk_req:
+        name: "mas-examine"
+        query: "Review current runtime diff for policy risk"
+        required: true
+      rsn: "A required skill trigger applies before this runtime change proceeds."
+
+  consultant_response:
+    required: [s, rl, rec]   # status, risk_level, recommendation
+    optional: [kc, rsn]      # key_concerns (list), reasoning (max 100 words)
+    rl_values: [none, low, medium, high]
+    rec_values: [consult:approve, consult:caution, consult:oppose]
+    notes:
+      - "Master MUST explicitly name which consultants to invoke via consultation_trigger.consultants"
+      - "Engine adds no default consultant list — master decides the panel composition"
+    example:
+      _v: "1.0"
+      s: "consult:caution"
+      rl: "medium"
+      rec: "consult:caution"
+      kc: ["scope creep risk", "missing timeline"]
+      rsn: "The proposal lacks explicit phase boundaries. Risk is medium because prior similar projects slipped when phases were not time-boxed."
+
+  spec_analysis:
+    required: [s]
+    optional: [f, oq]
+    example:
+      _v: "1.0"
+      s: "spec_analysis:incomplete"
+      f:
+        - {path: "scope.exclusions", st: "missing", act: "ask"}
+        - {path: "timeline", st: "missing", act: "ask"}
+
+  capability_assessment:
+    required: [s]
+    optional: [d, deploy]
+    # deploy: required when s == capability:plan_ready
+    # Each entry: {need, status, agent, task, payload, note, parallel, parallel_group} for ready entries
+    #             {need, status, cert_id, cert_path} for gap_certified entries
+    # parallel: true → agent can run concurrently with others sharing the same parallel_group
+    # parallel_group: string identifier — master dispatches all same-group entries in one parallel step
+    example:
+      _v: "1.0"
+      s: "capability:plan_ready"
+      deploy:
+        - need: "python_development"
+          status: "ready"
+          agent: "code_agent"
+          task: "Implement canonical models per spec"
+          payload: {context: "Phase M1", deliverable: "core/models.py", constraints: []}
+          note: ""
+          parallel: true
+          parallel_group: "implementation"
+        - need: "test_writing"
+          status: "ready"
+          agent: "test_agent"
+          task: "Write unit tests for canonical models"
+          payload: {context: "Phase M1", deliverable: "tests/test_models.py", constraints: []}
+          note: ""
+          parallel: true
+          parallel_group: "implementation"
+        - need: "ci_cd"
+          status: "gap_certified"
+          cert_id: "gap-proj-NNN-001"
+          cert_path: "mas/projects/.../hr/gap-proj-NNN-001.yaml"
+
+# ---------------------------------------------------------------------------
+# Compliance enforcement
+# ---------------------------------------------------------------------------
+compliance:
+  mode: metric                # metric | strict (currently: metric only)
+  metric_name: wire_compliance_rate
+  target: 0.90                # 90% of payloads should be wire-format
+  violation_on_noncompliance: false   # NEVER a governance violation
+  warning_on_noncompliance: true
+
+# ---------------------------------------------------------------------------
+# Versioning and migration
+# ---------------------------------------------------------------------------
+versioning:
+  current: "1.0"
+  known_versions: ["1.0"]
+  migration:
+    strategy: "expand() handles all known versions"
+    unknown_version: "pass through unchanged, log warning"
+
+# ---------------------------------------------------------------------------
+# Backward compatibility
+# ---------------------------------------------------------------------------
+backward_compatibility:
+  legacy_format: "expanded — no _v field, full field names"
+  detection: "absence of _v field indicates legacy format"
+  handling: "decode() and expand() accept both formats transparently"
+  existing_tests: "use expand() — all 1013+ tests unaffected"

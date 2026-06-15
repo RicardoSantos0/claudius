@@ -1,0 +1,81 @@
+# ============================================================
+# SPAWN POLICY
+# Controls when and how new agents may be created.
+# ============================================================
+
+spawn_policy:
+
+  # --- PREREQUISITES FOR ANY SPAWN ---
+  prerequisites:
+    - "A formal Capability Gap Certificate must exist"
+    - "The certificate must be approved by HR Agent"
+    - "The Master Orchestrator must grant explicit spawn approval"
+    - "A structured spawn request must be submitted via HR"
+    - "Project spawn limit must not be exceeded"
+
+  # --- SKILL-OR-AGENT DECISION (proj-YYYYMMDD-NNN) ---
+  # A certified capability gap is NOT automatically an AGENT gap. Before recommending a
+  # spawn, the gap/spawn pathway must evaluate whether the gap is better filled by a new or
+  # improved SKILL (created on demand via the skill-builder skill). This keeps the cheaper,
+  # reversible option (a skill / SOP) ahead of the heavier one (a governed agent identity).
+  skill_or_agent_decision:
+    required: true
+    evaluated_by: hr_agent            # during capability_discovery, before any spawn recommendation
+    prefer_skill_when:
+      - "The gap is a repeatable procedure / SOP, not an autonomous decision-making role."
+      - "The work is tool/document transformation, querying, or a fixed workflow."
+      - "No new shared-state field ownership or trust tier is required."
+    prefer_agent_when:
+      - "The gap needs autonomous judgement, shared-state ownership, or its own handoff identity."
+      - "The capability is a recurring cross-project role, not a single procedure."
+    skill_path:
+      tool: skill-builder
+      mode: draft_only                # human review before activation, mirroring spawn draft_only
+      note: >
+        When a skill fills the gap, use the skill-builder skill to create or optimize it on demand.
+        Record the skill-or-agent choice (and why) in the project decision log.
+
+  # --- LIMITS ---
+  limits:
+    max_spawns_per_project: 3
+    max_spawns_per_phase: 1
+    recursive_spawn_allowed: false      # Spawned agents cannot spawn
+    spawner_can_self_spawn: false
+
+  # --- SPAWN WORTHINESS CRITERIA ---
+  # All four must be true for spawn to be approved
+  worthiness_criteria:
+    bounded:
+      description: "The needed capability is specific and well-scoped"
+      required: true
+    recurring:
+      description: "The capability will be useful beyond this project"
+      required: true
+    verifiable:
+      description: "The spawned agent's output can be tested"
+      required: true
+    no_existing_match:
+      description: "No existing agent scores >= 80% match on the need"
+      required: true
+
+  # --- SPAWN MODES ---
+  modes:
+    draft_only:
+      description: "Agent is designed but never auto-deployed"
+      default: true
+      requires_human_review: true
+
+  # --- POST-SPAWN ---
+  post_spawn:
+    initial_trust_tier: "T3_provisional"
+    requires_verification: true
+    verifier: "evaluator_agent"
+    promotion_requires_human: true
+
+  # --- CONSULTANT CONSULTATION ---
+  consultation:
+    required: true
+    consultants: "all_five"
+    override_rule: >
+      If all five consultants flag high-risk, Master MUST escalate
+      to human. Cannot override unanimous high-risk without human approval.

@@ -1,0 +1,4 @@
+# Allowlisted patterns for privacy_scan.py (intentional, non-private).
+# The smoke test uses an obviously-fake project id as a fixture.
+proj-29990101-001-smoke
+RicardoSantos0

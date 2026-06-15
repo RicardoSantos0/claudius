@@ -1,0 +1,55 @@
+# ============================================================
+# EXECUTION AGENT TEMPLATE
+# Base template for agents that perform hands-on tasks:
+# code generation, file transformations, builds, deployments.
+# ============================================================
+
+agent_template:
+  id: execution_agent_template
+  version: 1.0.0
+  base_trust_tier: T3_provisional
+  scope: project_scoped
+
+  # Default tool set for execution work
+  default_tools:
+    - read
+    - edit
+    - execute
+    - search
+
+  # Capability tags typical of execution agents
+  capability_hints:
+    - code-generation
+    - file-transformation
+    - build
+    - execution
+    - automation
+
+  # Governance defaults
+  governance:
+    can_modify_files: true
+    can_execute_commands: true
+    can_spawn: false
+    can_approve: false
+    escalate_on_failure: true
+    requires_master_approval_for:
+      - "any irreversible file deletion"
+      - "any network call not in scope"
+      - "any action outside defined outputs"
+
+  # Verification approach
+  verification:
+    approach: "output_validation"
+    steps:
+      - "Verify all required outputs are produced"
+      - "Verify file changes match spec"
+      - "Check no forbidden tools were used"
+      - "Human review of generated artifacts"
+
+  # Behavioral guidelines embedded in agent definition
+  behavioral_guidelines:
+    - "Work only within the defined input/output contract"
+    - "Prefer read-before-write; never overwrite without confirmation"
+    - "All outputs are provisional until Master-reviewed"
+    - "Escalate on unexpected inputs or tool failures"
+    - "Log all actions taken in handoff payload"

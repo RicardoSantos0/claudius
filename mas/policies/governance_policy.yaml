@@ -1,0 +1,274 @@
+# ============================================================
+# GOVERNANCE POLICY
+# Core rules that all agents must follow at all times.
+# ============================================================
+
+governance_policy:
+
+  # --- CORE PRINCIPLES ---
+  principles:
+    reuse_before_creation:
+      description: >
+        Always try to use an approved existing agent or skill
+        before attempting to create a new one.
+      enforcement: "HR capability search is mandatory before any spawn request"
+
+    document_before_forgetting:
+      description: >
+        Significant project decisions and artifacts must be written
+        into durable project memory, not left in transient context.
+      enforcement: "Scribe records every handoff, decision, and artifact"
+
+    improve_only_through_evidence:
+      description: >
+        Training and skill updates must be grounded in Evaluator
+        findings, not informal intuition.
+      enforcement: "Trainer proposals require minimum 1 evaluation report"
+
+  # --- HANDOFF RULES ---
+  handoff_rules:
+    - "Every agent-to-agent transfer MUST use the formal handoff protocol"
+    - "Every handoff MUST be authorized by the Master Orchestrator"
+    - "The receiving agent MUST explicitly accept or reject"
+    - "A rejected handoff returns to the sender with rejection reason"
+    - "No agent may begin work without an accepted handoff"
+    - "The Scribe records every handoff in project memory"
+
+  # --- AUTHORITY BOUNDARIES ---
+  authority_rules:
+    - "No agent may write to shared state fields it does not own"
+    - "No agent may spawn another agent without a gap certificate"
+    - "No agent may escalate authority without Master approval"
+    - "No agent may delete any record"
+    - "Spawned agents (T3) cannot spawn other agents"
+    - "Trainer at L0 cannot apply changes — advisory only"
+
+  # --- SHARED STATE RULES ---
+  shared_state_rules:
+    - "Shared state is the single source of truth"
+    - "No agent may maintain private state that contradicts shared state"
+    - "All writes go through SharedStateManager with access control checks"
+    - "Immutable fields cannot be changed after approval"
+    - "Append-only fields reject write operations"
+
+  # --- ESCALATION TO HUMAN ---
+  human_escalation_triggers:
+    - "Risk classification is 'critical'"
+    - "A consultant raises an unresolvable concern"
+    - "Two consecutive spawn requests are denied"
+    - "A phase is blocked after retry"
+    - "All consultants unanimously flag high-risk"
+    - "Master needs to override unanimous consultant recommendation"
+    - "Trust tier promotion requested"
+    - "Governance policy change requested"
+    - "Trainer L1 or L2 promotion requested"
+
+  # --- FIELD OWNERSHIP — common violation patterns (prop-1451d23c, prop-a3c10b35, prop-ff0c52b0, prop-6d61732c) ---
+  field_ownership_guidance:
+    description: >
+      SharedStateManager.write/append require a valid agent_id that owns the target field.
+      Using a section name (e.g. "project_definition") as agent_id causes unauthorized_write
+      violations. Always pass the governing agent's id (e.g. "master_orchestrator",
+      "scribe_agent", "product_manager_agent") — not the section name.
+    ownership_quick_reference:
+      project_definition.success_criteria: "inquirer_agent | product_manager_agent | master_orchestrator"
+      project_definition.acceptance_criteria: "inquirer_agent | product_manager_agent | master_orchestrator"
+      decisions.decision_log: "scribe_agent | master_orchestrator | __system__"
+      workflow.completed_phases: "append_only — use SharedStateManager.append with master_orchestrator"
+    common_mistakes:
+      - "Using section name as agent_id ('project_definition', 'decisions')"
+      - "Calling .write() on append_only fields — use .append() instead"
+      - "Using master_orchestrator for fields exclusively owned by specialist agents"
+
+  # --- GRAPH CONTRIBUTION — closure requirement (prop-1d62c672, prop-c3778a9a) ---
+  graph_contribution_policy:
+    description: >
+      Deprecated. Graph memory is no longer a required closure path. Do not block
+      project closure on EpisodeWriter replay or migrate-graph; the supported direction
+      is SQL-backed retrieval and future storage replacement.
+    required_at: "not required"
+    command: "none"
+
+  # --- CONSULTANT PANEL COMPOSITION ---
+  consultant_panel_policy:
+    description: >
+      Master Orchestrator MUST specify which consultants to invoke via
+      consultation_trigger.consultants. The orchestration engine adds no defaults.
+      This ensures master owns the panel composition decision, not the engine.
+    rules:
+      - "consultation_trigger MUST include a consultants list when invoking consultation"
+      - "Engine-side default consultant lists are prohibited — master decides the panel"
+      - "Targeting zero consultants (empty list) is not permitted; minimum one consultant required"
+      - "Full panel (all five) is appropriate only for critical or governance-level decisions"
+    available_consultants:
+      - risk_advisor
+      - quality_advisor
+      - devils_advocate
+      - domain_expert
+      - efficiency_advisor
+
+  # --- HR DEPLOYMENT ROUTING ---
+  hr_deployment_routing:
+    description: >
+      When HR produces a DeploymentPlan, Master Orchestrator MUST route work
+      using that plan as the primary routing authority. Master does not re-derive
+      routing independently after HR has spoken.
+    rules:
+      - "Master MUST read HR's deploy array before issuing any handoffs post capability_discovery"
+      - "Each 'ready' entry in the DeploymentPlan maps directly to one handoff: to_agent=entry.agent, task=entry.task"
+      - "Handoffs MUST be issued in the order HR listed them (HR orders by dependency)"
+      - "HR's suggested_payload fields MUST be passed through to the receiving agent's handoff payload"
+      - "Any delegation to an agent NOT in HR's ready list is a ROUTING OVERRIDE and must be logged"
+    override_policy:
+      allowed: true
+      conditions:
+        - "Recommended agent is unavailable (probation, retired, or context HR lacked)"
+        - "A consultant has raised a specific concern about the recommended agent"
+        - "Master has project-specific information HR could not know at discovery time"
+      required_log_fields:
+        - override_of: "hr_deployment_recommendation"
+        - hr_plan_agents: "list of agents HR recommended"
+        - rationale: "why the override is necessary (required — not optional)"
+      violation_if_missing: true
+      note: "Override without a decision log entry is a governance violation, not a warning"
+
+  # --- PROJECT INIT GATE ---
+  project_init_gate:
+    description: >
+      Before dispatching ANY agent (including Scribe, Inquirer, or delivery agents),
+      Master Orchestrator MUST verify that shared_state.yaml exists for the project.
+      This file is created by `uv run mas init {slug}`. Its absence means the project
+      has not been properly registered and no agent delegation is authorised.
+    rules:
+      - "Run `uv run mas init {slug}` before any other action on a new project"
+      - "Use Glob to verify `mas/projects/{project_id}/shared_state.yaml` exists before dispatching"
+      - "If init fails, report the error to the user — do not substitute prose for the missing state"
+      - "Dispatching any agent without a confirmed shared_state.yaml is a governance violation"
+    violation_type: "pre_dispatch_init_missing"
+    severity: "high"
+
+  # --- LITE PROJECT GATE ---
+  lite_project_gate:
+    description: >
+      The lite workflow (mas/templates/lite_project_template.yaml) is an authorised
+      abbreviation for small-scope tasks. It is NOT a bypass of shared state or
+      artifact requirements. Lite projects still require: shared_state.yaml,
+      planning/product_plan.yaml, planning/execution_plan.yaml,
+      evaluation/project_evaluation.yaml, and a Scribe-written CHECKPOINT.md.
+    rules:
+      - "Lite workflow is only valid for ≤5 file changes with no architecture decisions"
+      - "Master must explicitly record the lite routing decision in decisions/decision_log.yaml"
+      - "All four required artifacts must exist on disk before the project can be closed"
+
+  # --- RETROACTIVE BYPASS PREVENTION (TP-040) ---
+  retroactive_bypass_prevention:
+    description: >
+      Prevents project briefs that describe already-completed work from silently
+      entering the MAS workflow and producing a bypass governance violation at
+      evaluation. The Inquirer performs a pre-flight scan and forces the user to
+      choose MAS execution or explicit pre-authorized bypass BEFORE intake completes.
+    risk_signals:
+      - "References to work that is 'already done', 'implemented', or 'committed'"
+      - "External repo paths with recent changes tied to this project"
+      - "Phrases: 'ratify', 'retroactive', 'verify on disk', 'already built'"
+      - "Brief authored in past tense throughout (implementation-complete perspective)"
+    user_options:
+      option_a: "Execute through MAS — treat existing work as draft, verify via delivery agents"
+      option_b: "Acknowledge intentional bypass — user provides written rationale; logged pre_authorized=true before intake completes"
+    governance_compliance_impact:
+      option_a: 100  # Full MAS compliance
+      option_b: 70   # WARNING — same as retroactive bypass but with pre-authorization credit
+    record_in: "intake/clarified_spec.yaml under bypass_risk_assessment"
+    frequency_limit: "No more than 2 user_authorized_bypass decisions per quarter per project"
+
+  # --- INLINE SYNTHESIS ATTRIBUTION (TP-043) ---
+  inline_synthesis_attribution:
+    description: >
+      In Claude Code manual mode, master_orchestrator synthesizes consultant panels
+      inline rather than dispatching live consultant agents. Writes to
+      consultation.consultation_responses must use write_as() to attribute content
+      to the consultant identity being synthesized, preventing unauthorized_write
+      governance violations.
+    permitted_when: "claude_code_manual mode only"
+    permitted_agent: "master_orchestrator only"
+    method: "SharedStateManager.write_as(synthesizing_agent, target_agent, section, field, value)"
+    audit_log_field: "source=inline_synthesis"
+    governance_impact: "Eliminates the 4-violation pattern on every manual-mode project with consultation"
+
+  # --- IP-003 EVALUATION EXEMPTION (TP-041) ---
+  ip003_evaluation_exemption:
+    description: >
+      The evaluation phase is explicitly ip-003 eligible. When the evaluator's
+      return handoff is self-documenting (non-empty art: list AND rsn/summary ≥ 80 chars),
+      master_orchestrator may skip the mandatory scribe phase-close round-trip.
+      This saves 2 handoffs and improves phase_efficiency from ~65 to ~80 on
+      qualifying evaluation phases.
+    condition:
+      - "evaluator return handoff art: list is non-empty"
+      - "evaluator return handoff rsn: OR summary field is ≥ 80 characters"
+    when_eligible: "skip scribe round-trip; write inline phase summary to shared_state.artifacts.change_log"
+    audit_requirement: "log decision entry {value: 'scribe_round_trip_skipped_ip003', rationale: 'evaluator payload is self-documenting'}"
+    phase_efficiency_target: 80
+
+  # --- CONSECUTIVE RETURN HANDOFF GATE (TP-milestone-c-001) ---
+  # Root cause: a prompt-only rule against ping-pong was insufficient and recurred
+  # in proj-c after the rule was added. Engine-level detection is the durable fix.
+  consecutive_return_handoff_gate:
+    description: >
+      Detects A -> B -> A -> B handoff ping-pong on the same task without
+      forward progress, and (when the project has opted in) records a
+      consecutive_return_handoff entry in decisions.policy_flags. Implemented
+      in mas/core/engine/handoff_engine.py (_detect_consecutive_return) and
+      fires inside HandoffEngine.create() before the new handoff is appended.
+    default: "disabled"
+    rationale_for_default: >
+      Backward compatibility. Projects with established handoff chains opened
+      before this gate landed must not retroactively fail. New projects opt in
+      explicitly via decisions.policy_flags.
+    opt_in:
+      mechanism: "Append to decisions.policy_flags"
+      shape: "{type: 'consecutive_return_handoff_gate', status: 'enabled'}"
+    detection:
+      - "Compare the incoming handoff (from=A, to=B, task=T) against the last 2 history entries"
+      - "Trigger iff prior=A->B (same T) and most_recent=B->A (same T)"
+      - "Task identity is exact-match on task_description; distinct tasks do not trigger"
+    behavior_when_enabled:
+      - "Non-blocking: handoff is still created (the engine does not raise)"
+      - "Records a {type: consecutive_return_handoff, severity: warn} entry in decisions.policy_flags"
+      - "Emits an audit warning in the audit trail"
+    behavior_when_disabled:
+      - "Emits a hint-level audit warning only; no policy_flag is recorded"
+    target_metric: "Zero ping-pong cycles uncaught at evaluation on opt-in projects"
+    applied_from: "proj-YYYYMMDD-NNN-mas-trainer-proposals-impl"
+
+  # --- DECISION LOG GATE (TP-milestone-b-001) ---
+  # Root cause: decision_quality scored 50/100 in 3 consecutive projects because
+  # OQ resolutions lived in handoff rsn fields, not in decisions.decision_log.
+  decision_log_gate:
+    description: >
+      Before Master Orchestrator closes any phase, it MUST check
+      workflow.handoff_history for OQ (open_questions) fields from that phase.
+      Every non-trivial OQ resolution MUST have a corresponding entry in
+      decisions.decision_log before the phase snapshot is taken.
+    rules:
+      - "For each resolved OQ in the phase, write a decision_log entry with
+         decision_id, value, rationale, and alternatives_considered"
+      - "If OQ resolutions exist only in handoff rsn fields, the phase-close
+         is a governance soft-block: write the decision entry or waive it with
+         a logged rationale before calling mas snapshot"
+      - "An empty decisions.decision_log at project close is a decision_quality
+         signal and will score ~50/100 — not a hard block, but always avoidable"
+    target_metric: "decision_quality >= 70 within 2 projects of applying this gate"
+    applied_from: "proj-YYYYMMDD-NNN-ml-autograder-milestone-b"
+    # TP-milestone-c-002 — make the rule executable.
+    pre_snapshot_required: true
+    verification_command: >
+      uv run python mas/core/engine/shared_state_manager.py read
+      --project-id {project_id} --path decisions.open_questions
+    enforcement_doc: "agents/master_orchestrator.md — 'Pre-Snapshot OQ Closure Check'"
+
+  # --- VIOLATION HANDLING ---
+  violations:
+    logging: "All violations are logged with full context"
+    agent_threshold: 3  # Violations before human escalation
+    block_before_execute: true  # Violations are blocked, not rolled back

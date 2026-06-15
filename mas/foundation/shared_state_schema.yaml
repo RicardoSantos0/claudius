@@ -1,0 +1,395 @@
+# ============================================================
+# SHARED STATE SCHEMA
+# This is the single source of truth for any active project.
+# Every agent reads from and writes to this through controlled
+# access rules. No agent may maintain private state that
+# contradicts or shadows shared state.
+# ============================================================
+
+shared_state:
+
+  # --- CORE IDENTITY ---
+  # Immutable after creation. Set by Master at project initialization.
+  core_identity:
+    project_id:
+      type: "string"
+      format: "proj-{YYYYMMDD}-{sequence}-{slug}"
+      example: "proj-YYYYMMDD-NNN-session-scheduler"
+      set_by: "master_orchestrator"
+      mutability: "immutable_after_creation"
+      required: true
+    request_id:
+      type: "string"
+      format: "req-{YYYYMMDD}{HHMMSS}"
+      set_by: "inquirer_agent"
+      mutability: "immutable_after_creation"
+      required: true
+    created_at:
+      type: "datetime_iso8601"
+      set_by: "system"
+      mutability: "immutable"
+      required: true
+    updated_at:
+      type: "datetime_iso8601"
+      set_by: "system"
+      mutability: "auto_updated_on_any_write"
+      required: true
+    current_phase:
+      type: "enum"
+      values:
+        - "intake"
+        - "specification"
+        - "planning"
+        - "capability_discovery"
+        - "execution"
+        - "review"
+        - "evaluation"
+        - "improvement"
+        - "closed"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+      required: true
+    status:
+      type: "enum"
+      values:
+        - "active"
+        - "paused"
+        - "blocked"
+        - "completed"
+        - "failed"
+        - "cancelled"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+      required: true
+
+  # --- PROJECT DEFINITION ---
+  # Written primarily by Inquirer and Product Manager.
+  # Immutable after Master approval.
+  project_definition:
+    original_brief:
+      type: "text"
+      set_by: "inquirer_agent"
+      mutability: "immutable_after_creation"
+      description: "The raw input as received from the user"
+    clarified_specification:
+      type: "structured_document"
+      set_by: "inquirer_agent"
+      mutability: "immutable_after_master_approval"
+      description: "The refined specification after intake Q&A"
+    project_goal:
+      type: "text"
+      set_by: "product_manager_agent"
+      mutability: "immutable_after_master_approval"
+    problem_statement:
+      type: "text"
+      set_by: "product_manager_agent"
+      mutability: "immutable_after_master_approval"
+    scope:
+      inclusions:
+        type: "list[string]"
+        set_by: "product_manager_agent"
+        mutability: "append_only_after_approval"
+      exclusions:
+        type: "list[string]"
+        set_by: "product_manager_agent"
+        mutability: "append_only_after_approval"
+    constraints:
+      type: "list[string]"
+      set_by: "product_manager_agent"
+      mutability: "append_only_after_approval"
+    success_criteria:
+      type: "list[criterion]"
+      set_by: "product_manager_agent"
+      mutability: "immutable_after_master_approval"
+      criterion_schema:
+        criterion_id: "string"
+        description: "string"
+        measurable: "boolean"
+        measurement_method: "string"
+        target_value: "string"
+    acceptance_criteria:
+      type: "list[criterion]"
+      set_by: "product_manager_agent"
+      mutability: "immutable_after_master_approval"
+    risk_classification:
+      type: "enum"
+      values: ["low", "medium", "high", "critical"]
+      set_by: "product_manager_agent"
+      mutability: "master_only_after_initial_set"
+    priority:
+      type: "enum"
+      values: ["p0_critical", "p1_high", "p2_medium", "p3_low"]
+      set_by: "product_manager_agent"
+      mutability: "master_only_after_initial_set"
+    target_area:
+      type: "text"
+      set_by: "master_orchestrator"
+      description: "Repo area this project mainly touches (e.g. mas/core/engine). Set at `mas init --target-area`; powers `mas rollup --area` grouping/filtering."
+
+  # --- WORKFLOW COORDINATION ---
+  # Owned and maintained by Master Orchestrator.
+  workflow:
+    active_agents:
+      type: "list[agent_assignment]"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+      agent_assignment_schema:
+        agent_id: "string"
+        role: "string"
+        assigned_at: "datetime_iso8601"
+        task_description: "string"
+        expected_output: "string"
+        deadline: "datetime_iso8601 | null"
+        status: "enum[assigned, active, completed, blocked, failed]"
+    completed_phases:
+      type: "list[phase_record]"
+      set_by: "master_orchestrator"
+      mutability: "append_only"
+      phase_record_schema:
+        phase: "string"
+        started_at: "datetime_iso8601"
+        completed_at: "datetime_iso8601"
+        outcome: "string"
+        artifacts_produced: "list[string]"
+    pending_assignments:
+      type: "list[assignment_request]"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+    current_owner:
+      type: "string"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+      description: "The agent currently holding primary responsibility"
+    handoff_history:
+      type: "list[handoff_record]"
+      set_by: "system"
+      mutability: "append_only"
+      description: "Immutable log of every agent-to-agent handoff"
+    resource_requests:
+      type: "list[resource_request]"
+      set_by: "any_manager_agent"
+      mutability: "append_only"
+      resource_request_schema:
+        request_id: "string"
+        requested_by: "string"
+        capability_needed: "string"
+        urgency: "enum[low, medium, high, critical]"
+        status: "enum[pending, fulfilled, denied, escalated]"
+        fulfilled_by: "string | null"
+        resolution_notes: "string | null"
+    resource_allocations:
+      type: "list[resource_allocation]"
+      set_by: "hr_agent"
+      mutability: "append_only"
+
+  # --- DECISIONS AND TRACEABILITY ---
+  # Critical for governance. Every significant decision must be recorded.
+  decisions:
+    decision_log:
+      type: "list[decision_record]"
+      set_by: "scribe_agent"
+      mutability: "append_only"
+      decision_record_schema:
+        decision_id: "string"
+        timestamp: "datetime_iso8601"
+        made_by: "string"
+        decision_type: "enum[scope, technical, resource, governance, escalation]"
+        description: "string"
+        rationale: "string"
+        alternatives_considered: "list[string]"
+        impact: "string"
+        reversible: "boolean"
+        approval_required: "boolean"
+        approved_by: "string | null"
+    assumptions:
+      type: "list[assumption]"
+      set_by: "any_agent"
+      mutability: "append_only"
+      assumption_schema:
+        assumption_id: "string"
+        stated_by: "string"
+        description: "string"
+        validated: "boolean"
+        validated_by: "string | null"
+        validation_method: "string | null"
+    open_questions:
+      type: "list[question]"
+      set_by: "any_agent"
+      mutability: "append_only_with_resolution"
+      question_schema:
+        question_id: "string"
+        asked_by: "string"
+        question: "string"
+        assigned_to: "string | null"
+        status: "enum[open, answered, deferred, cancelled]"
+        answer: "string | null"
+        answered_by: "string | null"
+    approvals:
+      type: "list[approval_record]"
+      set_by: "master_orchestrator"
+      mutability: "append_only"
+    policy_flags:
+      type: "list[policy_flag]"
+      set_by: "any_agent"
+      mutability: "append_only"
+      description: "Flags raised when an action may conflict with governance policy"
+
+  # --- CAPABILITY AND SPAWNING ---
+  capability:
+    available_skills_snapshot:
+      type: "list[skill_reference]"
+      set_by: "hr_agent"
+      mutability: "hr_agent_only"
+      description: "Snapshot of relevant capabilities at project start"
+    reuse_candidates:
+      type: "list[reuse_candidate]"
+      set_by: "hr_agent"
+      mutability: "hr_agent_only"
+    deployment_plan:
+      type: "list[deployment_plan_entry]"
+      set_by: "hr_agent"
+      mutability: "hr_agent_only"
+      description: >
+        The HR DeploymentPlan produced at capability_discovery.
+        Master Orchestrator reads this to route work; it does not write to this field.
+        Cleared (replaced with consumed entries marked dispatched) as master issues handoffs.
+      deployment_plan_entry_schema:
+        need:          "string — capability need description"
+        status:        "enum[ready, gap_certified, probation_risk]"
+        agent:         "string | null — recommended agent_id (when status=ready)"
+        task:          "string | null — concrete task description to assign"
+        payload:       "dict | null — suggested handoff payload fields"
+        note:          "string | null — parameterization note or warning"
+        cert_id:       "string | null — gap certificate ID (when status=gap_certified)"
+        cert_path:     "string | null — gap certificate file path"
+        dispatched_at: "datetime_iso8601 | null — set by orchestration loop when handoff issued"
+        parallel:       "boolean | null — true if this entry can be dispatched concurrently with others in the same parallel_group"
+        parallel_group: "string | null — group id; entries sharing the same group are dispatched simultaneously"
+    capability_gap_certificates:
+      type: "list[capability_gap_certificate]"
+      set_by: "hr_agent"
+      mutability: "append_only"
+    spawn_requests:
+      type: "list[spawn_request]"
+      set_by: "hr_agent"
+      mutability: "append_only"
+    spawned_agents:
+      type: "list[spawned_agent_record]"
+      set_by: "spawner_agent"
+      mutability: "append_only"
+    verification_results:
+      type: "list[verification_record]"
+      set_by: "evaluator_agent"
+      mutability: "append_only"
+
+  # --- ARTIFACTS AND OUTPUTS ---
+  artifacts:
+    documents:
+      type: "list[artifact_reference]"
+      set_by: "scribe_agent"
+      mutability: "append_only"
+      artifact_reference_schema:
+        artifact_id: "string"
+        name: "string"
+        type: "enum[specification, plan, deliverable, report, log, template]"
+        path: "string"
+        created_by: "string"
+        created_at: "datetime_iso8601"
+        version: "integer"
+        status: "enum[draft, review, approved, archived]"
+    deliverables:
+      type: "list[artifact_reference]"
+      set_by: "scribe_agent"
+      mutability: "append_only"
+    change_log:
+      type: "list[change_record]"
+      set_by: "scribe_agent"
+      mutability: "append_only"
+      change_record_schema:
+        change_id: "string"
+        timestamp: "datetime_iso8601"
+        changed_by: "string"
+        field_changed: "string"
+        old_value: "string"
+        new_value: "string"
+        reason: "string"
+
+  # --- EVALUATION AND TRAINING ---
+  evaluation:
+    performance_metrics:
+      type: "list[metric_record]"
+      set_by: "evaluator_agent"
+      mutability: "append_only"
+    quality_findings:
+      type: "list[finding]"
+      set_by: "evaluator_agent"
+      mutability: "append_only"
+    improvement_proposals:
+      type: "list[improvement_proposal]"
+      set_by: "trainer_agent"
+      mutability: "append_only"
+    approved_updates:
+      type: "list[approved_update]"
+      set_by: "master_orchestrator"
+      mutability: "append_only"
+
+  # --- COMMUNICATION EFFICIENCY ---
+  # System-managed counters for wire protocol adoption and token tracking.
+  # Written exclusively by system methods (bypass ACL). Read by evaluator and trainer.
+  communication:
+    token_tracking_enabled:
+      type: "boolean"
+      set_by: "master_orchestrator"
+      mutability: "master_only"
+      default: true
+      description: "Enable/disable token usage tracking for this project"
+    total_tokens_used:
+      type: "integer"
+      set_by: "system"
+      mutability: "system_only"
+      default: 0
+      description: "Cumulative estimated tokens across all messages in the project"
+    tokens_by_agent:
+      type: "dict[agent_id, integer]"
+      set_by: "system"
+      mutability: "system_only"
+      description: "Per-agent token usage totals"
+    tokens_by_phase:
+      type: "dict[phase, integer]"
+      set_by: "system"
+      mutability: "system_only"
+      description: "Per-phase token usage totals"
+    wire_compliant_count:
+      type: "integer"
+      set_by: "system"
+      mutability: "system_only"
+      default: 0
+      description: "Number of handoff payloads that passed wire protocol validation"
+    wire_total_count:
+      type: "integer"
+      set_by: "system"
+      mutability: "system_only"
+      default: 0
+      description: "Total number of handoff payloads submitted (compliant + non-compliant)"
+    wire_compliance_rate:
+      type: "float | null"
+      set_by: "system"
+      mutability: "system_only"
+      default: null
+      description: "wire_compliant_count / wire_total_count; null when wire_total_count == 0"
+
+  # --- CONSULTANT PANEL ---
+  consultation:
+    consultation_requests:
+      type: "list[consultation_request]"
+      set_by: "master_orchestrator"
+      mutability: "append_only"
+    consultation_responses:
+      type: "list[consultation_response]"
+      set_by: "consultant_agents"
+      mutability: "append_only"
+    synthesis:
+      type: "list[consultation_synthesis]"
+      set_by: "master_orchestrator"
+      mutability: "append_only"
+      description: "Master's synthesis of consultant input into a decision"

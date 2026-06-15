@@ -1,0 +1,39 @@
+# ============================================================
+# CONSULTATION REQUEST TEMPLATE
+# Used by Master Orchestrator to invoke the Consultant Panel.
+# ============================================================
+
+consultation_request:
+  request_id: ""                # consult-{project_id}-{sequence}
+  project_id: ""
+  timestamp: ""                 # ISO 8601
+  requested_by: "master_orchestrator"
+
+  # --- QUESTION ---
+  question: ""                  # The specific question for consultants
+  context: {}                   # Relevant shared state fields
+  decision_type: ""             # spawn | scope | architecture | risk | governance
+
+  # --- CONSULTANT SELECTION ---
+  mandatory: false              # If true, all 5 must respond
+  consultants_selected: []      # Subset if not mandatory (min 2)
+
+  # --- RESPONSES ---
+  responses: {}
+  # Each entry:
+  #   {consultant_id}:
+  #     response: ""
+  #     word_count: 0
+  #     responded_at: ""
+
+  # --- SYNTHESIS ---
+  synthesis:
+    produced_by: "master_orchestrator"
+    produced_at: null
+    summary: ""
+    perspectives_acknowledged: []
+    decision_reached: ""
+    rationale: ""
+    risks_addressed: ""
+    follow_up_round: false
+    follow_up_question: null

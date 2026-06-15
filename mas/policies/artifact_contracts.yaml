@@ -1,0 +1,54 @@
+# MAS Artifact Contracts
+# Per-phase required and optional artifacts. Used by lifecycle_guard and mas doctor.
+# Contract structure: phase -> required[] (must exist) and optional[] (may exist)
+version: "1.0"
+phases:
+  intake:
+    required:
+      - intake/original_brief.md
+    optional:
+      - intake/assumptions.yaml
+
+  specification:
+    required:
+      - intake/clarified_spec.yaml
+    optional:
+      - specification/open_questions.yaml
+
+  planning:
+    required:
+      - planning/product_plan.yaml
+      - planning/execution_plan.yaml
+    optional:
+      - planning/risk_register.yaml
+
+  capability_discovery:
+    required:
+      - governance/deployment_plan.yaml
+    optional:
+      - governance/gap_certificate.yaml
+
+  execution:
+    required:
+      - planning/execution_plan.yaml
+    optional:
+      - execution/work_log.md
+      - execution/diff_summary.md
+
+  review:
+    required:
+      - review/quality_review.md
+    optional:
+      - review/risk_review.md
+
+  evaluation:
+    required:
+      - evaluation/project_evaluation.yaml
+    optional:
+      - evaluation/improvement_proposals.yaml
+
+  closed:
+    required:
+      - CLOSED.md
+      - final_shared_state.yaml
+    optional: []

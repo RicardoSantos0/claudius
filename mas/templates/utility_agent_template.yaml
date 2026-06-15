@@ -1,0 +1,54 @@
+# ============================================================
+# UTILITY AGENT TEMPLATE
+# Base template for lightweight, single-purpose helper agents:
+# formatters, validators, converters, notifiers.
+# Narrowest possible tool set and scope.
+# ============================================================
+
+agent_template:
+  id: utility_agent_template
+  version: 1.0.0
+  base_trust_tier: T3_provisional
+  scope: project_scoped
+
+  # Utility agents get minimal tools — expand only as needed
+  default_tools:
+    - read
+
+  # Capability tags typical of utility agents
+  capability_hints:
+    - formatting
+    - validation
+    - conversion
+    - notification
+    - utility
+    - transformation
+
+  # Governance defaults — most restrictive
+  governance:
+    can_modify_files: false
+    can_execute_commands: false
+    can_spawn: false
+    can_approve: false
+    escalate_on_failure: true
+    single_responsibility: true
+    requires_master_approval_for:
+      - "any action beyond the single defined purpose"
+      - "any state mutation outside the output artifact"
+
+  # Verification approach
+  verification:
+    approach: "unit_validation"
+    steps:
+      - "Provide sample input and verify output matches spec"
+      - "Confirm output is deterministic (same input → same output)"
+      - "Check no side-effects outside defined output"
+      - "Human review before integration"
+
+  # Behavioral guidelines
+  behavioral_guidelines:
+    - "Do one thing and do it well"
+    - "Accept well-defined inputs; reject malformed inputs with clear error"
+    - "Return structured output matching the output contract"
+    - "Never assume intent — if input is ambiguous, escalate"
+    - "No persistent state between invocations"

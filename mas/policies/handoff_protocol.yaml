@@ -1,0 +1,114 @@
+# ============================================================
+# HANDOFF PROTOCOL
+# Every agent-to-agent transfer MUST use this structure.
+# No exceptions. No informal handoffs.
+# ============================================================
+
+handoff_protocol:
+
+  description: >
+    A handoff occurs when responsibility for a task or phase
+    transfers from one agent to another. Every handoff must be
+    structured, logged, and accepted or rejected by the
+    receiving agent.
+
+  handoff_record:
+    # --- Identity ---
+    handoff_id:
+      type: "string"
+      format: "ho-{project_id}-{sequence}"
+      example: "ho-proj-YYYYMMDD-NNN-session-scheduler-001"
+      required: true
+    project_id:
+      type: "string"
+      format: "proj-{YYYYMMDD}-{sequence}-{slug}"
+      required: true
+    timestamp:
+      type: "datetime_iso8601"
+      required: true
+
+    # --- Parties ---
+    from_agent:
+      type: "string"
+      required: true
+    to_agent:
+      type: "string"
+      required: true
+    authorized_by:
+      type: "string"
+      description: "Usually master_orchestrator"
+      required: true
+
+    # --- Context ---
+    phase:
+      type: "string"
+      required: true
+    task_description:
+      type: "string"
+      required: true
+
+    # --- Payload ---
+    payload:
+      summary:
+        type: "text"
+        description: "What was done before this handoff"
+        required: true
+      artifacts_produced:
+        type: "list[artifact_reference]"
+        description: "What was created"
+        required: true
+      decisions_made:
+        type: "list[decision_reference]"
+        description: "What was decided (references to decision_log entries)"
+        required: true
+      open_questions:
+        type: "list[question_reference]"
+        description: "What remains unresolved"
+        required: true
+      constraints_for_next:
+        type: "list[string]"
+        description: "What the receiving agent must respect"
+        required: true
+      shared_state_fields_modified:
+        type: "list[string]"
+        description: "Which shared state fields were changed"
+        required: true
+
+    # --- Acceptance ---
+    acceptance:
+      status:
+        type: "enum"
+        values: ["pending", "accepted", "rejected", "accepted_with_questions"]
+        required: true
+      rejection_reason:
+        type: "string | null"
+        description: "If rejected, why"
+      follow_up_questions:
+        type: "list[string] | null"
+        description: "If accepted_with_questions, what needs clarification"
+      accepted_at:
+        type: "datetime_iso8601 | null"
+
+  rules:
+    - "Every handoff MUST be logged in shared_state.workflow.handoff_history"
+    - "Every handoff MUST be authorized by master_orchestrator"
+    - "The receiving agent MUST explicitly accept or reject"
+    - "A rejected handoff returns to the sending agent with the rejection reason"
+    - "No agent may begin work on a task without an accepted handoff"
+    - "The Scribe records every handoff in project memory"
+    - "A live handoff record MUST be created and accepted BEFORE work on any phase begins — retroactive handoffs filed after-the-fact are a record integrity violation and will penalize the project score"
+    - "When delegating a phase with multiple tasks, batch all tasks into a single handoff to minimize overhead — one handoff per phase, not one per task"
+    - "Retroactive handoffs are permitted for recovery only; they MUST be flagged with retroactive: true in the payload and logged as a quality finding"
+
+  deployment_plan_routing:
+    description: >
+      After HR returns a DeploymentPlan, handoffs to execution agents MUST be
+      sourced from that plan. The DeploymentPlan is the authorized routing table
+      for the capability_discovery → execution transition.
+    rules:
+      - "Handoff to_agent MUST match an entry in the HR DeploymentPlan unless a logged override exists"
+      - "Handoff task_description SHOULD use the plan entry's task field as its basis"
+      - "Handoff payload MUST include hr_suggested_params from the plan entry when present"
+      - "Each plan entry produces exactly one handoff — do not split or merge plan entries"
+      - "Gap-certified entries do NOT produce handoffs; they produce spawn decisions or deferrals"
+      - "After all ready entries are dispatched, Master clears the pending deployment plan"

@@ -1,0 +1,25 @@
+# Export-ignore rules — paths excluded from git archive / source exports.
+# This prevents private, generated, and runtime files from being included
+# in archives produced by `scripts/export_source.sh` or `git archive`.
+
+.env export-ignore
+.env.* export-ignore
+.claude/settings.local.json export-ignore
+.venv/ export-ignore
+.git/ export-ignore
+__pycache__/ export-ignore
+*.pyc export-ignore
+*.pyo export-ignore
+*.py[cod] export-ignore
+mas/data/ export-ignore
+mas/projects/ export-ignore
+mas/logs/ export-ignore
+mas/working_state/ export-ignore
+skills/notebooklm/data/browser_state/ export-ignore
+skills/notebooklm/data/auth_info.json export-ignore
+*.sqlite export-ignore
+*.sqlite3 export-ignore
+*.db export-ignore
+*.log export-ignore
+secrets/ export-ignore
+logs/ export-ignore

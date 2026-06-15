@@ -1,0 +1,83 @@
+# ============================================================
+# MEMORY TYPE DEFINITIONS
+# Every piece of information in the system MUST be classifiable
+# into exactly one of these three types.
+# ============================================================
+
+memory_types:
+
+  working_state:
+    description: >
+      Ephemeral coordination data that exists only during active
+      processing of a task or phase. Discarded or archived when
+      the task or phase completes.
+    lifetime: "task_or_phase_duration"
+    owner: "master_orchestrator"
+    persistence: "ephemeral"
+    examples:
+      - "current agent assignments"
+      - "pending handoffs"
+      - "active blockers"
+      - "in-progress draft artifacts"
+      - "conversation context for current phase"
+    storage_location: "working_state/"
+    cleanup_policy: >
+      Archived to project memory at phase completion.
+      Deleted from working state after archival confirmation.
+    access_rules:
+      read: "all_active_agents"
+      write: "master_orchestrator, currently_assigned_agent"
+      delete: "master_orchestrator_only"
+
+  project_memory:
+    description: >
+      Durable record of one project's full lifecycle: decisions,
+      artifacts, evaluations, and lessons learned. Persists
+      indefinitely. One instance per project.
+    lifetime: "indefinite"
+    owner: "scribe_agent"
+    persistence: "durable"
+    examples:
+      - "approved project specification"
+      - "decision log with rationale"
+      - "scope change records"
+      - "deliverables and artifacts"
+      - "evaluation results"
+      - "lessons learned"
+      - "capability gap certificates"
+      - "spawn records"
+    storage_location: "projects/{project_id}/"
+    cleanup_policy: >
+      Never deleted. May be archived after project closure.
+      Archived projects remain searchable.
+    access_rules:
+      read: "all_agents"
+      write: "scribe_agent_only"
+      delete: "never"
+      amend: "scribe_agent with master_approval"
+
+  roster_memory:
+    description: >
+      Registry of all known agents, skills, tools, performance
+      history, and trust tiers. Persists across all projects.
+      Versioned. Single system-wide instance.
+    lifetime: "system_lifetime"
+    owner: "hr_agent"
+    persistence: "durable_versioned"
+    examples:
+      - "agent definitions and capabilities"
+      - "skill metadata and parameters"
+      - "tool access profiles"
+      - "spawn history"
+      - "performance scores per agent"
+      - "trust tier assignments"
+      - "retirement records"
+    storage_location: "roster/"
+    cleanup_policy: >
+      Never deleted. Retired entries are marked inactive, not removed.
+      All changes are versioned with timestamps.
+    access_rules:
+      read: "all_agents"
+      write: "hr_agent_only"
+      delete: "never"
+      version: "automatic_on_every_write"

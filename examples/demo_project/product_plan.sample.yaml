@@ -1,0 +1,51 @@
+# SAMPLE product plan (lite mode) — illustrative output for the demo task.
+# In a real project this is written into the project's planning/ folder.
+project_id: proj-YYYYMMDD-NNN-demo-calculator
+created_by: product_manager_agent
+version: 1
+status: draft
+
+vision: >
+  A tiny, dependency-free command-line calculator that performs the four basic
+  arithmetic operations on two numbers, with clear errors and a small test suite.
+
+goals:
+  - "G1: Correct results for add / subtract / multiply / divide on valid input."
+  - "G2: Graceful, explicit handling of bad input (non-numbers, divide-by-zero)."
+  - "G3: A minimal automated test suite proving the above."
+
+requirements:
+  must_have:
+    - id: M01
+      title: "Four operations"
+      description: "CLI accepts: <a> <op> <b> where op in + - x /."
+      acceptance: "Each operation returns the mathematically correct result."
+    - id: M02
+      title: "Error handling"
+      description: "Non-numeric input and division by zero produce a clear message and non-zero exit."
+      acceptance: "Invalid input never crashes with a traceback; exit code != 0."
+  should_have:
+    - id: S01
+      title: "Tests"
+      description: "Unit tests covering each operation plus the two error cases."
+      acceptance: "All tests pass."
+  wont_have:
+    - "Expression parsing / order of operations (single binary op only)."
+    - "Floating-point formatting options, history, or a GUI."
+
+acceptance_criteria:
+  - criterion: "calculator.py runs the four operations correctly from the CLI"
+    requirement_ids: [M01]
+  - criterion: "bad input and divide-by-zero are handled with a clear message + non-zero exit"
+    requirement_ids: [M02]
+  - criterion: "test suite passes"
+    requirement_ids: [S01]
+
+out_of_scope:
+  - "Multi-operation expressions, parentheses, scientific functions."
+
+risks:
+  - id: R01
+    severity: low
+    description: "Locale/parsing edge cases for number input."
+    mitigation: "Parse with float(); reject anything that raises ValueError."

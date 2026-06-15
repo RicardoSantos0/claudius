@@ -1,0 +1,77 @@
+# MAS Consultation Trigger Policy
+# Defines when consultation is required or recommended before proceeding.
+# Required rules block delegation/phase-advance/spawn/close until satisfied or overridden.
+# Rule structure: when (deterministic conditions) + decision_type + consultants
+# Required entries are blocking; recommended entries are advisory.
+version: "1.0"
+consultation_trigger_policy:
+  required:
+    - id: pre-planning-scope-consultation
+      decision_type: planning
+      consultants: [risk_advisor, quality_advisor, devils_advocate, efficiency_advisor, domain_expert]
+      when:
+        any:
+          - phase: specification
+          - touched_paths_any:
+              - planning/product_plan.yaml
+              - mas/projects/*/planning/product_plan.yaml
+
+    - id: evaluation-requires-consultation
+      decision_type: evaluation
+      consultants: [risk_advisor, quality_advisor, efficiency_advisor]
+      when:
+        any:
+          - phase: evaluation
+          - touched_paths_any:
+              - evaluation/**
+              - mas/projects/*/evaluation/**
+
+    - id: spawn-requires-full-panel
+      decision_type: spawn
+      consultants: [risk_advisor, quality_advisor, devils_advocate, domain_expert, efficiency_advisor]
+      when:
+        any:
+          - has_spawn_request: true
+          - has_gap_certificate: true
+
+    - id: policy-change-requires-core-panel
+      decision_type: governance
+      consultants: [risk_advisor, quality_advisor, efficiency_advisor]
+      when:
+        touched_paths_any:
+          - mas/policies/**
+          - mas/foundation/**
+          - standards/mas-governance.md
+
+    - id: runtime-change-requires-architecture-panel
+      decision_type: architecture
+      consultants: [domain_expert, risk_advisor, quality_advisor]
+      timeout_hours: 24
+      fallback: skip_with_warning
+      when:
+        touched_paths_any:
+          - mas/core/**
+          - pyproject.toml
+          - .github/workflows/**
+
+    - id: skill-agent-change-requires-review
+      decision_type: governance
+      consultants: [quality_advisor, risk_advisor]
+      when:
+        touched_paths_any:
+          - agents/**
+          - skills/**
+          - commands/**
+
+    - id: evaluation-fail-requires-postmortem-consult
+      decision_type: risk
+      consultants: [risk_advisor, quality_advisor, efficiency_advisor]
+      when:
+        status: "eval:fail"
+
+  recommended:
+    - id: large-diff-recommend-consultation
+      decision_type: risk
+      consultants: [risk_advisor, quality_advisor]
+      when:
+        changed_files_count_gte: 5

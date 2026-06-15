@@ -1,0 +1,54 @@
+# MAS Typed Event Taxonomy
+# All event types written to episodic.db must use one of these names.
+# Categories: orchestration, skills, consultation, handoff, state, quality, governance
+#
+# Required fields per event: project_id, actor, action_type, intent, payload
+# Optional fields per event: phase, rule_id, artifacts
+version: "1.0"
+event_types:
+  orchestration:
+    - decision_made
+    - phase_transition
+    - project_initialized
+    - project_closed
+    - project_reopened
+    - stop_reason
+    - policy_block
+
+  skills:
+    - skill_recommended
+    - skill_requested
+    - skill_invoked
+    - skill_completed
+    - skill_skipped
+
+  consultation:
+    - consultation_required
+    - consultation_requested
+    - consultation_response
+    - consultation_synthesis
+    - consultation_applied
+    - consultation_overridden
+
+  handoff:
+    - handoff_created
+    - handoff_accepted
+    - handoff_rejected
+    - handoff_completed
+
+  state:
+    - shared_state_written
+    - shared_state_rebuilt
+    - snapshots_cleaned
+
+  quality:
+    - output_lint
+    - evaluation_result
+    - postmortem_created
+
+  governance:
+    - decision_recorded
+    - override_recorded
+    - spawn_requested
+    - spawn_approved
+    - spawn_rejected

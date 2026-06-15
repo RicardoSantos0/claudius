@@ -1,0 +1,17 @@
+# Dependabot — keep GitHub Actions and Python deps current (and SHA-pinnable).
+# Supply-chain hardening recommended for the public claudius release.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"

@@ -1,0 +1,346 @@
+registry:
+  version: 1.0.0
+  last_updated: '2026-05-16T00:37:27.051611+00:00'
+  maintained_by: hr_agent
+  agents:
+  - agent_id: master_orchestrator
+    name: Master Orchestrator
+    version: 1.0.0
+    trust_tier: T0_core
+    status: active
+    capabilities:
+    - orchestration
+    - coordination
+    - governance
+    - delegation
+    - phase-management
+    - decision-making
+    - spawn-approval
+  - agent_id: scribe_agent
+    name: Scribe Agent
+    version: 1.0.0
+    trust_tier: T0_core
+    status: active
+    capabilities:
+    - documentation
+    - record-keeping
+    - decision-logging
+    - artifact-tracking
+    - audit-trail
+  - agent_id: inquirer_agent
+    name: Inquirer Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - intake
+    - requirements-elicitation
+    - clarification
+    - specification
+    - qa-process
+  - agent_id: product_manager_agent
+    name: Product Manager Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - product-planning
+    - requirements
+    - moscow-prioritization
+    - acceptance-criteria
+    - risk-identification
+    - scope-definition
+  - agent_id: hr_agent
+    name: HR Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - capability-discovery
+    - roster-management
+    - gap-certification
+    - match-scoring
+    - agent-registration
+    - agent-retirement
+  - agent_id: project_manager_agent
+    name: Project Manager Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - execution-planning
+    - task-decomposition
+    - milestone-tracking
+    - dependency-mapping
+    - progress-reporting
+    - delivery-risk
+    - blocker-escalation
+  - agent_id: evaluator_agent
+    name: Performance Evaluation Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - performance-evaluation
+    - metric-scoring
+    - evaluation-reporting
+    - pattern-detection
+    - improvement-identification
+    - exemplary-flagging
+  - agent_id: spawner_agent
+    name: Agent Designer (Spawner)
+    version: 1.0.0
+    trust_tier: T2_supervised
+    status: active
+    capabilities:
+    - agent-design
+    - spawn-policy
+    - capability-packaging
+    - draft-generation
+    - template-instantiation
+  - agent_id: trainer_agent
+    name: Trainer Agent
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - improvement-proposals
+    - pattern-detection
+    - backlog-management
+    - training-analysis
+    - evidence-evaluation
+  - agent_id: risk_advisor
+    name: Risk Advisor
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - risk-analysis
+    - failure-mode-analysis
+    - mitigation-planning
+    - blast-radius-assessment
+  - agent_id: quality_advisor
+    name: Quality Advisor
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - quality-review
+    - completeness-check
+    - testability-assessment
+    - quality-gates
+  - agent_id: devils_advocate
+    name: Devils Advocate
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - assumption-challenging
+    - alternative-perspectives
+    - blind-spot-detection
+    - consensus-questioning
+  - agent_id: domain_expert
+    name: Domain Expert
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - domain-knowledge
+    - best-practices
+    - prior-art
+    - domain-constraints
+  - agent_id: efficiency_advisor
+    name: Efficiency Advisor
+    version: 1.0.0
+    trust_tier: T1_established
+    status: active
+    capabilities:
+    - efficiency-analysis
+    - overengineering-detection
+    - cost-estimation
+    - simplification
+  - agent_id: session_scheduler
+    name: Session Scheduler
+    version: 1.0.0
+    trust_tier: infrastructure
+    status: active
+    capabilities:
+    - session-resume
+    - project-lock
+    - checkpoint-resume
+    governance_note: Operates outside MAS handoff protocol by design. Invoked by cron via RemoteTrigger;
+      acquires per-project lock and calls /resume-mas. Does not participate in handoff chain. Exception
+      approved 2026-04-14.
+  - agent_id: reliability_engineer
+    name: Reliability Engineer
+    version: 2.0.0
+    trust_tier: T1_established
+    status: active
+    description: Python delivery agent for quality gates and test infrastructure. Owns CI baseline setup,
+      test suite (>=80% coverage enforced), golden fixtures, module boundary lint guards, write-path interception
+      tests at transport layer, and packaging cleanup. Runs parallel with primary delivery agents from
+      sprint kickoff.
+    capabilities:
+    - ci-baseline-setup
+    - coverage-gate-enforcement
+    - golden-fixtures
+    - ci-lint-guards
+    - write-path-interception
+    - packaging-cleanup
+    - parallel-sprint-execution
+    - atomic-write
+    - tenacity-retry
+  skills: []
+  tools: []
+counts:
+  active_agents: 16
+  active_skills: 11
+  retired_agents: 0
+  spawned_total: 0
+capability_vocabulary:
+  tenacity-retry:
+    description: 'Retry logic using the tenacity library. IMPORTANT: tenacity v9+ removed wait_callable().
+      Use wait_base subclasses or wait_fixed/wait_exponential. Do not use wait_callable().
+
+      '
+  http-pagination:
+    description: Iterating multi-page HTTP responses (cursor-based or offset-based).
+  atomic-write:
+    description: Write to staging path first, swap to final on success; rollback staging on failure.
+  argparse-cli:
+    description: 'CLI built with Python argparse (NOT Click). Test pattern: main([''subcommand'', ''--arg'',
+      ''val'']) or parser.parse_args([...]). Do NOT use Click''s CliRunner — it is Click-specific only.
+
+      '
+  click-cli:
+    description: 'CLI built with Click. Test pattern: CliRunner().invoke(command, [...]). Distinct from
+      argparse-cli.
+
+      '
+skills:
+- skill_id: mas-review
+  status: active
+  category: workflow
+  trigger_phases:
+  - intake
+  - planning
+  - execution
+  - review
+  - evaluation
+  description: Review project state, handoffs, stale context, risks, and next action.
+  recommended_for:
+  - master_orchestrator
+  - session_scheduler
+- skill_id: mas-plan
+  status: active
+  category: workflow
+  trigger_phases:
+  - planning
+  - capability_discovery
+  description: Produce or update a phase-aware MAS execution plan.
+  recommended_for:
+  - master_orchestrator
+  - project_manager_agent
+- skill_id: mas-clarify
+  status: active
+  category: workflow
+  trigger_phases:
+  - intake
+  - specification
+  description: Surface blocking questions, safe assumptions, and proposed defaults.
+  recommended_for:
+  - inquirer_agent
+  - product_manager_agent
+  - master_orchestrator
+- skill_id: mas-examine
+  status: active
+  category: workflow
+  trigger_phases:
+  - execution
+  - review
+  description: Analyze code, docs, state, policies, or architecture without modifying state.
+  recommended_for:
+  - quality_advisor
+  - risk_advisor
+  - domain_expert
+  - project_manager_agent
+  - master_orchestrator
+- skill_id: mas-document
+  status: active
+  category: workflow
+  trigger_phases:
+  - phase_close
+  - closed
+  description: Update checkpoints, decision logs, artifact indexes, and progress summaries.
+  recommended_for:
+  - scribe_agent
+  - master_orchestrator
+- skill_id: mas-handoff
+  status: active
+  category: workflow
+  trigger_phases:
+  - session_end
+  - pr
+  - blocked
+  description: Produce human-facing handoff summaries from MAS state.
+  recommended_for:
+  - master_orchestrator
+  - session_scheduler
+  - scribe_agent
+- skill_id: mas-logwork
+  status: active
+  category: workflow
+  trigger_phases:
+  - execution
+  - review
+  - closed
+  description: Record work sessions and elapsed effort into MAS event memory.
+  recommended_for:
+  - session_scheduler
+  - master_orchestrator
+- skill_id: mas-postmortem
+  status: active
+  category: workflow
+  trigger_phases:
+  - evaluation
+  - blocked
+  - incident
+  description: Analyze failed phases, rejected handoffs, violations, or regressions.
+  recommended_for:
+  - evaluator_agent
+  - trainer_agent
+  - master_orchestrator
+- skill_id: skill-builder
+  status: active
+  category: meta
+  trigger_phases:
+  - planning
+  - execution
+  description: Create new skills, optimize existing skills, or audit skill quality following Claude Code
+    official best practices.
+  recommended_for:
+  - spawner_agent
+  - master_orchestrator
+- skill_id: frontend-design
+  status: active
+  category: delivery
+  trigger_phases:
+  - execution
+  description: Create distinctive, production-grade frontend interfaces. Use when building web components,
+    pages, or applications.
+  recommended_for:
+  - master_orchestrator
+- skill_id: graphify
+  status: active
+  category: navigation
+  trigger_phases:
+  - planning
+  - capability_discovery
+  - execution
+  description: Turn any folder (code, docs, papers) into a navigable knowledge graph with community detection
+    and query/path/explain tools — fast navigation of the area MAS is working in, and grounded answers
+    about architecture and file relationships.
+  recommended_for:
+  - project_manager_agent
+  - domain_expert
+  - master_orchestrator

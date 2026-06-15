@@ -1,0 +1,101 @@
+# Claude local/machine-specific settings
+.claude/settings.local.json
+
+# Secrets & credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+.venv/
+.pytest_cache/
+*.egg-info/
+dist/
+.coverage
+
+# MAS runtime data (project-specific, not committed) — keep the dir, ignore contents
+mas/projects/*
+!mas/projects/.gitkeep
+mas/working_state/
+
+# MAS data and logs (not committed)
+mas/data/
+mas/logs/
+mas/data/*
+mas/logs/*
+
+# Log and graph files generated at runtime (any depth in mas/)
+mas/**/*.log
+mas/**/*.db
+mas/*.yaml
+mas/*.log
+mas/core/*.log
+mas/core/*.yaml
+
+# Repo-root runtime logs
+logs/
+
+# graphify knowledge-graph outputs — local-only (persistent graph for /graphify query,
+# regenerated on demand; any depth)
+graphify-out/
+
+# Repo-root roster/ was a stray runtime-write location; training_engine now
+# writes to the canonical mas/roster/. Ignore it so the duplicate cannot return (req-004).
+/roster/
+
+# MAS roster (committed, but large binaries excluded)
+mas/roster/**/*.bak
+mas/**/*.bak
+
+# MAS roster runtime artifacts — training_engine regenerates these at runtime
+# (like mas/projects + mas/data). Canonical config (registry_index/canonical,
+# version_history, trust_tiers) stays tracked; these runtime files do not.
+mas/roster/training_backlog.yaml
+mas/roster/exemplary_references.yaml
+
+# Database files (any location)
+*.sqlite
+*.sqlite3
+*.db
+
+# Log files
+*.log
+
+# Skills runtime/auth data
+skills/notebooklm/data/browser_state/
+skills/notebooklm/data/auth_info.json
+
+# Editor
+.vscode/settings.json
+.vscode/mcp.json
+*.sync-conflict-*
+# Syncthing metadata
+.stfolder/
+# Working planning / audit / roadmap artifacts (not part of the shipped repo —
+# durable records live in the gitignored mas/projects/<id>/ folders instead)
+CLAUDE_CONFIG_IMPROVEMENT_PLAN.md
+MAS_IMMEDIATE_FOLLOWUPS.md
+claude_config_repo_review.md
+mas/AUDIT_FINDINGS_*.md
+mas/AUDIT_IMPLEMENTATION_PLAN.md
+mas/NOTEBOOKLM_CONSULT_*.md
+mas/EFFECTIVENESS_REVIEW.md
+mas/ROADMAP.md
+
+# Local-only helper scripts (not shipped)
+mas/scripts/accept_eval_consultations.py
+mas/scripts/write_closed_md.py
+mas/scripts/write_eval_consultation.py
+mas/scripts/write_trainer_proposals.py

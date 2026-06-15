@@ -1,0 +1,35 @@
+# MAS Lifecycle Invariants
+# Runtime guards that block invalid phase transitions and missing artifacts.
+# severity: block = hard stop | warn = logged warning, execution continues
+# Invariant structure: condition (phase/event/state/artifact) -> severity outcome
+version: "1.0"
+invariants:
+  - id: no-execution-without-plan
+    phase_min: execution
+    required_artifacts:
+      - planning/product_plan.yaml
+      - planning/execution_plan.yaml
+    severity: block
+
+  - id: no-close-with-open-handoffs
+    event: project_close
+    state_path_empty:
+      - workflow.pending_assignments
+    severity: block
+
+  - id: no-close-with-open-questions
+    event: project_close
+    state_path_empty:
+      - decisions.open_questions
+    severity: warn
+
+  - id: no-phase-advance-after-invalid-output
+    event: phase_advance
+    condition: last_agent_output_invalid
+    severity: block
+
+  - id: no-spawn-without-gap-certification
+    event: spawn_request
+    required_artifacts:
+      - governance/gap_certificate.yaml
+    severity: block

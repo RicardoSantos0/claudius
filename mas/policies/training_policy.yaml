@@ -1,0 +1,56 @@
+# ============================================================
+# TRAINING POLICY
+# Defines how improvement proposals are made and applied.
+# ============================================================
+
+training_policy:
+
+  # --- AUTHORITY LEVELS ---
+  authority_levels:
+    L0_advisory:
+      description: "Can analyze and propose. Cannot apply."
+      default: true
+      can_apply: false
+    L1_supervised:
+      description: "Can apply low-risk changes with Master approval."
+      can_apply: true
+      requires_master_approval: true
+      applies_to: ["prompt_refinements", "threshold_adjustments"]
+    L2_autonomous:
+      description: "Can apply approved change types without per-change approval."
+      can_apply: true
+      requires_master_approval: false
+      applies_to: ["prompt_refinements"]
+
+  # --- MINIMUM EVIDENCE ---
+  minimum_evidence:
+    single_finding: "At least 1 evaluation report with a specific finding"
+    systemic_proposal: "At least 2 evaluation reports showing the same pattern"
+
+  # --- PRIORITIZATION ---
+  proposal_priority:
+    1: "Boundary violations (highest)"
+    2: "Governance failures"
+    3: "Repeated quality issues"
+    4: "Efficiency improvements"
+    5: "Minor prompt refinements (lowest)"
+
+  # --- BACKLOG ---
+  backlog:
+    file: "training_backlog.yaml"
+    location: "roster/"
+    statuses: ["pending", "approved", "rejected", "applied"]
+    rejected_can_resubmit: true
+    resubmit_requires: "New evidence"
+
+  # --- VERSIONING ---
+  versioning:
+    each_proposal_gets_id: true
+    rejected_proposals_archived: true
+    resubmission_references_original: true
+
+  # --- SUCCESS MEASUREMENT ---
+  success_measurement:
+    description: >
+      Metrics cited in the proposal's evidence must show improvement
+      in the next evaluation cycle. If they don't, flag for review.

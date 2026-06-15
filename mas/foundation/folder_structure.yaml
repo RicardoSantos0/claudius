@@ -1,0 +1,93 @@
+# ============================================================
+# MAS FOLDER STRUCTURE (reference)
+# Describes the ACTUAL on-disk layout of the MAS system and of a
+# project directory. This is a descriptive reference kept in sync with
+# reality — not a rigid contract. (Historically labeled "no deviations
+# allowed"; that contradicted the live layout, so it is now reference.)
+# Verified against HEAD in proj-YYYYMMDD-NNN-mas-drift-cleanup (F4.1).
+# ============================================================
+
+folder_structure:
+
+  system_root:
+    # Roster: the registry is consolidated into registry_index.yaml +
+    # repo-root agents/ & skills/. (The old per-entry roster/{agents,skills,tools}
+    # subdirs were never populated and were removed — F1.)
+    roster:
+      subdirs:
+        - trust_tiers      # Trust tier rules (tier_definitions.yaml)
+      files:
+        - registry_index.yaml     # Active agent registry (runtime index)
+        - registry_canonical.yaml # Canonical roster source of truth
+        - version_history.yaml    # Append-only roster change log
+        - training_backlog.yaml   # Created at runtime by training_engine
+        - exemplary_references.yaml
+
+    policies:
+      description: "Governance rule YAML (spawn, governance, handoff, trust, evaluation, training, consultation triggers, …)"
+
+    templates:
+      description: "Handoff, spawn, eval-report, project-spec, consultation templates (YAML)"
+
+    domains:
+      description: "Domain context files injected into the domain_expert consultant"
+
+    foundation:
+      files:
+        - memory_types.yaml
+        - shared_state_schema.yaml
+        - folder_structure.yaml
+        - event_types.yaml         # Typed event taxonomy for episodic.db
+
+    core:
+      description: "Python engine; CLI in core/cli.py, engine subpackage in core/engine/"
+
+    data:
+      files:
+        - episodic.db              # SQLite: agent_events (+FTS), agent_graph, shared_states, registry tables (gitignored runtime state)
+
+    tools:
+      files:
+        - roster_sync.py           # Sync registry_canonical.yaml -> episodic.db agents index
+        - capability_sync.py       # Sync agents + skills + commands -> episodic.db
+        - reconcile_closed.py
+        - purge_test_noise.py
+
+    tests:
+      subdirs:
+        - unit
+        - governance
+        - integration
+        - prompts
+
+    projects:
+      description: >
+        Runtime project data (gitignored). One directory per project, created
+        dynamically: projects/{project_id}/. project_id = proj-{YYYYMMDD}-{NNN}-{slug}.
+      project_dir:
+        # Top-level files written across the lifecycle:
+        files:
+          - shared_state.yaml         # Live shared state (the orchestration projection)
+          - CHECKPOINT.md             # Human-readable checkpoint (regenerated on phase change)
+          - CLOSED.md                 # Closure report (written at close)
+          - final_shared_state.yaml   # Final snapshot (written at close)
+          - "shared_state_snapshot_{phase}_{ts}.yaml"  # Per-phase snapshots (cleaned at close)
+          - "{phase}_phase_summary.yaml"               # Optional per-phase summaries
+          - PROJECT_SUMMARY.md        # Optional human summary (reused by lineage->intake)
+        # Phase subdirs (created on demand by the agents working that phase):
+        subdirs:
+          intake:        "original_brief / brief.md, clarified_spec.yaml, clarification Q&A"
+          specification: "clarified specification artifacts (when used)"
+          planning:      "product_plan.*, execution_plan.*, task_board.yaml"
+          capability_discovery: "HR capability discovery / deployment plan"
+          execution:     "delivery artifacts + per-milestone result docs"
+          decisions:     "decision_log.yaml, assumptions, open_questions"
+          consultation:  "consultant interactions + synthesis"
+          evaluation:    "evaluation_report.yaml, metrics, agent evaluations"
+          improvement:   "trainer improvement proposals, approved updates"
+
+    # Repo-root global config dirs (outside mas/, symlinked into ~/.claude):
+    repo_root_dirs:
+      agents:   "Claude Code agent definitions: {agent_id}.md (roster source)"
+      commands: "Custom slash commands: {name}.md"
+      skills:   "Skill packages: {skill_name}/SKILL.md (roster source)"

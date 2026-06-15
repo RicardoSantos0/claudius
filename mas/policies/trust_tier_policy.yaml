@@ -1,0 +1,87 @@
+# ============================================================
+# TRUST TIER POLICY
+# Defines what each tier can and cannot do.
+# ============================================================
+
+trust_tier_policy:
+
+  tiers:
+
+    T0_core:
+      name: "Core"
+      description: "Foundational system agents. Highest trust."
+      agents: ["master_orchestrator", "hr_agent", "scribe_agent"]
+      permissions:
+        can_read_full_shared_state: true
+        can_write_owned_fields: true
+        can_authorize_handoffs: true  # Master only
+        can_register_agents: true     # HR only
+        can_write_project_memory: true  # Scribe only
+      restrictions:
+        cannot_spawn_without_certificate: true
+        cannot_override_governance_policy: true
+
+    T1_established:
+      name: "Established"
+      description: "Approved specialist agents. Operate independently."
+      agents:
+        - "product_manager_agent"
+        - "project_manager_agent"
+        - "evaluator_agent"
+        - "risk_advisor"
+        - "quality_advisor"
+        - "devils_advocate"
+        - "domain_expert"
+        - "efficiency_advisor"
+      permissions:
+        can_read_relevant_shared_state: true
+        can_write_owned_fields: true
+        can_request_capabilities: true
+      restrictions:
+        cannot_spawn: true
+        cannot_change_governance: true
+        cannot_modify_other_agents: true
+
+    T2_supervised:
+      name: "Supervised"
+      description: "High-impact agents requiring Master oversight."
+      agents: ["trainer_agent", "spawner_agent"]
+      permissions:
+        can_read_relevant_shared_state: true
+        can_write_owned_fields: true
+        can_propose_changes: true   # Trainer
+        can_design_agents: true     # Spawner
+      restrictions:
+        cannot_apply_changes_without_master: true
+        cannot_deploy_agents: true
+        trainer_L0_cannot_apply: true
+
+    T3_provisional:
+      name: "Provisional"
+      description: "Newly spawned agents. Sandbox only."
+      agents: []  # Populated dynamically
+      permissions:
+        can_read_scoped_state: true
+        can_write_task_output: true
+      restrictions:
+        cannot_access_production_state: true
+        cannot_spawn: true
+        cannot_interact_externally_unsupervised: true
+        requires_master_oversight: true
+
+  # --- PROMOTION RULES ---
+  promotion:
+    T3_to_T1:
+      requires:
+        - "Successful verification by Evaluator"
+        - "Human approval"
+        - "Zero governance violations in sandbox"
+    T2_trainer_L0_to_L1:
+      requires:
+        - "3 successful projects with human review of all proposals"
+        - "Zero governance violations"
+        - "Human approval"
+    T2_trainer_L1_to_L2:
+      requires:
+        - "5 successful L1 cycles with zero issues"
+        - "Human approval"

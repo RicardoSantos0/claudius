@@ -1,0 +1,38 @@
+# ============================================================
+# CAPABILITY GAP CERTIFICATE TEMPLATE
+# Produced by HR Agent when no suitable capability exists.
+# ============================================================
+
+capability_gap_certificate:
+  certificate_id: ""            # gap-{project_id}-{sequence}
+  requested_by: ""              # Agent that raised the need
+  project_id: ""
+  timestamp: ""                 # ISO 8601
+
+  need_description: ""          # What capability is missing
+
+  search_performed:
+    exact_matches_found: 0
+    partial_matches_found: 0
+    partial_match_details: []   # [{agent_id, coverage_pct, gap_description}]
+    search_scope: "full_roster"
+
+  why_existing_fails:
+    nearest_capability: ""      # Best existing match found
+    gap_description: ""         # Why it's not good enough
+    could_be_parameterized: false
+    parameterization_rejected_because: ""
+
+  spawn_recommendation:
+    should_spawn: false
+    is_bounded: false           # Is the need specific and scoped?
+    is_recurring: false         # Useful beyond this project?
+    is_verifiable: false        # Can the result be tested?
+    risk_classification: "low"  # low | medium | high
+    rationale: ""
+
+  approved_by_hr: false
+  hr_approved_at: null
+  forwarded_to_master: false
+  master_decision: null         # approved | denied | deferred
+  master_decided_at: null

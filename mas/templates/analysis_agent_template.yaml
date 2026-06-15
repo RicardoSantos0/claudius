@@ -1,0 +1,58 @@
+# ============================================================
+# ANALYSIS AGENT TEMPLATE
+# Base template for agents that read, reason, and produce
+# structured reports, summaries, or recommendations.
+# No file writes beyond the analysis artifact.
+# ============================================================
+
+agent_template:
+  id: analysis_agent_template
+  version: 1.0.0
+  base_trust_tier: T3_provisional
+  scope: project_scoped
+
+  # Analysis agents are read-heavy, write only their report
+  default_tools:
+    - read
+    - search
+
+  # Capability tags typical of analysis agents
+  capability_hints:
+    - analysis
+    - reporting
+    - summarization
+    - pattern-detection
+    - data-processing
+    - insight-generation
+
+  # Governance defaults — stricter than execution (read-only mostly)
+  governance:
+    can_modify_files: false
+    can_execute_commands: false
+    can_spawn: false
+    can_approve: false
+    escalate_on_failure: true
+    output_only_artifacts:
+      - "analysis report (YAML or Markdown)"
+      - "findings list"
+      - "recommendations list"
+    requires_master_approval_for:
+      - "any write operation not to designated output path"
+      - "any external data fetch"
+
+  # Verification approach
+  verification:
+    approach: "report_review"
+    steps:
+      - "Verify report covers all required_inputs"
+      - "Verify all required_outputs are present in report"
+      - "Check no write tools were used outside output path"
+      - "Human review of findings and recommendations"
+
+  # Behavioral guidelines
+  behavioral_guidelines:
+    - "Reason from evidence; cite specific sources"
+    - "Distinguish facts from inferences; label confidence"
+    - "Produce structured output (YAML preferred over free text)"
+    - "Do not modify source data — read only"
+    - "Flag gaps in evidence rather than guessing"

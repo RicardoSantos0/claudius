@@ -1,0 +1,111 @@
+# CI — claudius (MAS framework) validation
+# Runs on push/PR to master (private working repo) and main (public claudius repo).
+#
+# Jobs:
+#   validate          — agent/skill registry consistency + archive cleanliness
+#   test              — MAS test suite on the supported matrix (Python 3.11/3.12/3.13)
+#   build             — sdist + wheel packaging check
+#   powershell-syntax — static parse of setup.ps1 (Windows)
+#
+# Notes:
+#   * Privacy/content scanning (scripts/privacy_scan.py) runs in the M4 public-build
+#     pipeline against the *curated* tree — NOT here, since the private working repo
+#     legitimately contains paths that are stripped during curation.
+#   * Supply chain: actions are referenced by version tag and kept current by
+#     Dependabot (.github/dependabot.yml). For the public release, pin each action to
+#     a full 40-char commit SHA (tracked in docs/release-checklist.md).
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+# Least privilege: these jobs only need to read repository contents.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate repo standards
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies
+        run: uv sync
+      - name: Validate agents
+        run: uv run python scripts/validate_agents.py
+      - name: Validate skills
+        run: uv run python scripts/validate_skills.py
+      - name: Archive cleanliness
+        run: |
+          git archive HEAD --format=tar -o "${RUNNER_TEMP}/test_archive.tar"
+          uv run python scripts/check_archive_clean.py "${RUNNER_TEMP}/test_archive.tar"
+
+  test:
+    name: Tests (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv (with cache)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Install dependencies (py${{ matrix.python-version }})
+        run: uv sync --python ${{ matrix.python-version }}
+      - name: Run tests
+        run: uv run --python ${{ matrix.python-version }} pytest mas/tests/ -q
+
+  build:
+    name: Packaging build check
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Verify artifacts
+        run: ls -l dist/*.tar.gz dist/*.whl
+
+  powershell-syntax:
+    name: PowerShell setup script syntax
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Parse setup.ps1 (syntax check only, no execution)
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./setup.ps1),
+            [ref]$null,
+            [ref]$errors
+          )
+          if ($errors) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          Write-Output 'setup.ps1: OK'

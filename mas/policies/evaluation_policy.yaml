@@ -1,0 +1,222 @@
+# ============================================================
+# EVALUATION POLICY
+# Defines how projects and agents are evaluated.
+# ============================================================
+
+evaluation_policy:
+
+  # --- TRIGGER ---
+  trigger: "Automatic after every project completion. Can be manually triggered."
+
+  # --- MINIMUM METRICS (v1) ---
+  minimum_metrics:
+    goal_achievement:
+      description: "Degree to which project goal was achieved"
+      scale: "0-100"
+      weight: 1.0
+    acceptance_criteria_pass_rate:
+      description: "Percentage of acceptance criteria met"
+      scale: "0-100%"
+      weight: 1.0
+    handoff_acceptance_rate:
+      description: "Percentage of handoffs accepted on first attempt"
+      scale: "0-100%"
+      weight: 1.0
+    documentation_completeness:
+      description: "Percentage of required documentation produced"
+      scale: "0-100%"
+      weight: 1.0
+    boundary_violation_count:
+      description: "Number of governance boundary violations detected"
+      scale: "integer (lower is better)"
+      weight: 1.0
+
+  # --- PROJECT SCORE WEIGHTING (single source of truth) ---
+  # The MetricsEngine reads these weights to compute the weighted overall project
+  # score. Outcome ("What") metrics are weighted higher than process ("How")
+  # metrics — a project that documents well but misses its goal must not score the
+  # same as one that hits its goal. Metrics not listed here default to weight 1.0.
+  # Metrics marked not_applicable in a given run are excluded from the average.
+  # Names MUST match MetricsEngine MetricResult.metric strings.
+  project_metric_weights:
+    # outcome / "What"
+    goal_achievement: 3.0
+    acceptance_criteria_pass_rate: 3.0
+    # governance / integrity (high — these are guardrails)
+    governance_compliance: 2.0
+    record_integrity: 2.0
+    # process / "How"
+    scope_adherence: 1.5
+    decision_quality: 1.0
+    documentation_completeness: 1.0
+    phase_efficiency: 1.0
+    test_drift_detection: 1.0
+
+  # --- QUALITATIVE SCORING RUBRIC ---
+  decision_quality_rubric:
+    "0-25": "Decisions undocumented or contradicted stated goals"
+    "26-50": "Decisions documented but lacked rationale"
+    "51-75": "Decisions documented with rationale"
+    "76-100": "Decisions documented with rationale, alternatives, and traceability"
+
+  # --- BENCHMARKS ---
+  benchmarks:
+    start_after_projects: 3  # Relative benchmarks after 3rd project
+    before_benchmarks: "Use absolute rubric scales"
+
+  # --- AGENT EVALUATION ---
+  agent_evaluation:
+    probation_threshold: 60  # Average score below this → probation flag
+    exemplary_threshold: 90  # Score above this → flag output as exemplary
+    # Weighted agent score. task_completion (outcome) outweighs process metrics.
+    # handoff_quality is N/A in claude_code_manual mode (excluded, not zero-weighted).
+    metric_weights:
+      task_completion_rate: 2.0
+      boundary_adherence: 2.0
+      handoff_quality: 1.0
+
+  # --- EVALUATION CONSULTATION ---
+  # ENFORCEMENT: this declarative block is enforced by the runtime via
+  # consultation_trigger_policy.yaml → rule `evaluation-requires-consultation`
+  # (decision_type: evaluation). The two MUST list the same consultants; the
+  # consistency is guarded by tests/governance/test_policy_fidelity.py
+  # (test_evaluation_consultants_consistent_across_policies) so they cannot drift.
+  evaluation_consultation:
+    required: true
+    when: "during evaluation phase — before accepting final conclusions, trainer handoff, or closure"
+    consultants: [risk_advisor, quality_advisor, efficiency_advisor]
+    review_scope:
+      - "evaluation report evidence and scoring rationale"
+      - "acceptance criteria pass/fail evidence"
+      - "governance violations and missing artifacts"
+      - "probation/exemplary recommendations"
+      - "improvement areas below threshold"
+    record_in: "consultation.synthesis with decision_type: evaluation"
+
+  # --- SPAWN OPPORTUNITY REVIEW ---
+  # At project review/evaluation, Master MUST assess whether capability gaps
+  # discovered during execution warrant a formal spawn proposal. This applies
+  # even when Claude Code covered the gap — recurring gaps erode efficiency and
+  # consistency across projects. A specialized agent will always outperform a
+  # general-purpose executor for focused, repeated work.
+  spawn_opportunity_review:
+    when: "review phase — before evaluation handoff"
+    trigger_conditions:
+      - "HR issued a gap certificate or gap note during capability_discovery"
+      - "A required capability was covered by Claude Code as a fallback (not a formal agent)"
+      - "The same capability gap appeared in a prior project"
+      - "The work performed was specialized enough that a domain-focused agent would reduce context overhead"
+    assessment_questions:
+      - "Is this capability likely to be needed in future projects?"
+      - "Would a specialized agent deliver more consistent, focused output than a general executor?"
+      - "Is the scope of the capability narrow enough to fit a well-defined agent definition?"
+      - "Does the spawning policy (max 3/project, 1/phase) allow a spawn here?"
+    outcomes:
+      spawn_proposal: "Forward gap cert to spawner_agent if all trigger conditions and policy allow"
+      defer: "Log the gap and threshold — trainer_agent may surface it after 2+ recurrences"
+      no_action: "Document reasoning — gap was project-specific and unlikely to recur"
+    record_in: "decisions.decision_log with rationale and alternatives_considered"
+
+  # --- GRAPH CONTRIBUTION (retired — proj-YYYYMMDD-NNN P8) ---
+  graph_contribution:
+    status: "retired"
+    required_at_closure: false
+    note: >
+      The global_graph_contribution metric was retired together with the graph_memory
+      subsystem (removed in proj-008). Cross-project memory now uses the SQL-backed path
+      (episodic.db + the agent_graph tables); no graph-contribution metric remains.
+
+  # --- CLAUDE CODE MANUAL MODE SCORING ---
+  # When a project runs in Claude Code manual mode (no autonomous loop, token_usage=0,
+  # handoffs accepted in-session), certain metrics are structurally not meaningful.
+  # Evaluator should note mode in the report; trainer proposals should not flag these
+  # as agent quality issues.
+  claude_code_mode_metrics:
+    detection: "communication.total_tokens_used == 0 AND workflow.wire_total_count > 0"
+    not_applicable:
+      - handoff_quality  # No rejection cycle in manual mode — always scores 0; not a quality signal
+    still_scored:
+      - task_completion_rate     # Valid regardless of mode
+      - boundary_adherence       # Valid regardless of mode
+      - documentation_completeness  # Intentionally scored — encourages filling docs even in manual mode
+      - record_integrity            # Valid regardless of mode
+
+  # --- TEST DRIFT DETECTION (TP-042) ---
+  test_drift_detection:
+    description: >
+      Detects when a module-level constant, default argument, or enum value was
+      changed during execution without a corresponding update to existing tests
+      that reference the old value. Prevents closure-blocker surprises discovered
+      only at evaluation (as in issue-001 from proj-YYYYMMDD-NNN).
+    scoring:
+      100: "No constants changed, OR all changed constants have matching test updates in the same commit"
+      50:  "Constant changed without test update, but detected and corrected before closure (WARNING)"
+      0:   "Constant changed, existing test not updated, caused a closure blocker or evaluator discovery"
+      not_applicable: "No module-level constants or defaults changed in the project diff"
+    detection_method: >
+      Evaluator scans the execution diff for lines matching DEFAULT_, default=, or enum value
+      assignments. For each changed value, greps tests/ for the old string. Mismatch → finding.
+    delivery_agent_obligation: >
+      canonical_engineer, integration_engineer, and reliability_engineer MUST grep tests/ for
+      the old value before committing any constant change (TP-007). Evaluator scores the outcome;
+      delivery agents are responsible for prevention.
+
+  # --- NAMING CONVENTION QUALITY (TP-044) ---
+  naming_convention_quality:
+    description: >
+      Tracks whether proposed artifact paths (docs, modules) followed the naming
+      conventions of sibling files in the same directory. Mismatches caught at
+      planning cost nothing; mismatches caught at evaluation cost a quality finding.
+    scoring:
+      100: "All proposed paths match sibling naming conventions OR no new paths proposed"
+      50:  "Path mismatch flagged at planning/execution and corrected before evaluation"
+      0:   "Path mismatch surfaced only at evaluation (quality finding qf-NNN)"
+      not_applicable: "No new artifact paths proposed"
+    prevention: >
+      Product Manager checks sibling names at product plan time (TP-044, Step 3).
+      Project Manager confirms at execution plan time (TP-044, Step 2b).
+      Evaluator scores the outcome.
+
+  # --- TOKEN TRACKING ---
+  token_tracking:
+    enabled: true
+    field: "token_usage"
+    location: "handoff_record"
+    purpose: "Cost analysis, not enforcement in v1"
+
+  # --- COMMUNICATION EFFICIENCY DIMENSION ---
+  # Scored by MetricsEngine after every project. Advisory only — low scores
+  # produce training proposals, never governance violations.
+  communication_efficiency:
+    enabled: true
+    weight: 0.5  # Half-weight relative to core metrics (comms is secondary concern)
+    low_score_threshold: 65
+    metrics:
+      token_efficiency:
+        description: "Ratio of information density to raw token cost across handoff payloads"
+        source: "communication.total_tokens_used + workflow.handoff_history"
+        scoring: "Higher = more information per token. Penalised for large prose payloads."
+        training_proposal_type: "communication_waste"
+      payload_density:
+        description: "Average meaningful field count per handoff payload vs. total field count"
+        source: "workflow.handoff_history[].payload"
+        scoring: "Higher = less noise. Empty fields and prose summaries reduce score."
+        training_proposal_type: "communication_waste"
+      context_injection_efficiency:
+        description: "Ratio of state fields actually used in agent tasks to total fields injected"
+        source: "prompt_assembler STATE_PROJECTIONS + workflow.handoff_history"
+        scoring: "Higher = tighter projections. Over-injection reduces score."
+        training_proposal_type: "context_bloat"
+      consultation_overhead:
+        description: "Token cost of consultation rounds as fraction of total project token spend"
+        source: "consultation.consultation_responses + communication.total_tokens_used"
+        scoring: "Lower overhead = higher score. Long prose reasoning reduces score."
+        training_proposal_type: "context_bloat"
+    wire_compliance:
+      description: "Fraction of handoff payloads using wire protocol encoding"
+      source: "communication.wire_compliance_rate"
+      enforcement: "metric_only"
+      note: >
+        Wire non-compliance is tracked and reported but is NEVER a governance violation.
+        Non-compliant payloads are accepted and processed normally.
+        Low compliance produces a training proposal via training_engine.generate_communication_proposals().

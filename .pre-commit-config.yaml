@@ -1,0 +1,37 @@
+# Pre-commit hooks for claude-config / MAS.
+# Install once per clone:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Reference: ip-001 / proj-YYYYMMDD-NNN
+repos:
+  - repo: local
+    hooks:
+      - id: validate-agents
+        name: Validate MAS agent frontmatter and registry coverage
+        # Use uv to ensure PyYAML and other deps resolve from the project venv.
+        entry: uv run python scripts/validate_agents.py
+        language: system
+        pass_filenames: false
+        # Run when any agent definition, the registry, or the validator itself changes.
+        files: ^(agents/.*\.md|mas/roster/registry_canonical\.yaml|scripts/validate_agents\.py)$
+        # Always exits 0 on success, 1 on validation failure, 2 on usage error.
+
+      - id: validate-skills
+        name: Validate MAS skill frontmatter and registry coverage
+        # Use uv to ensure PyYAML and other deps resolve from the project venv.
+        entry: uv run python scripts/validate_skills.py
+        language: system
+        pass_filenames: false
+        # Run when any skill definition, the registry, or the validator itself changes.
+        files: ^(skills/.*/SKILL\.md|mas/roster/registry_index\.yaml|mas/roster/registry_canonical\.yaml|scripts/validate_skills\.py)$
+        # Always exits 0 on success, 1 on validation failure, 2 on usage error.
+
+      - id: check-archive-clean
+        name: Verify a git archive contains no private/generated paths
+        # Build a tar of HEAD and assert it carries no blocked/private files.
+        entry: bash -c 'ARCHIVE="${TMPDIR:-/tmp}/precommit_archive.tar"; git archive HEAD --format=tar -o "$ARCHIVE" && uv run python scripts/check_archive_clean.py "$ARCHIVE"'
+        language: system
+        pass_filenames: false
+        always_run: true
+        # Always exits 0 on success, 1 if blocked paths present, 2 on usage error.

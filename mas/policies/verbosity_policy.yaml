@@ -1,0 +1,24 @@
+# MAS Verbosity Policy
+# Output budgets for agents and consultants.
+# Injected as a compact summary block into agent prompts by PromptAssembler.
+version: "1.0"
+verbosity_policy:
+  default_style: compact
+
+  global:
+    max_preface_words_before_action: 50
+    max_rsn_words: 50
+    omit_repeated_policy_text: true
+    prefer_paths_over_prose: true
+
+  agent_outputs:
+    consultant_response_words: 180
+    delivery_agent_summary_words: 250
+    master_human_update_words: 150
+    handoff_summary_words: 300
+    checkpoint_words: 800
+
+  formatting:
+    max_bullets_per_section: 7
+    max_table_rows_without_user_request: 8
+    require_action_first_for_execution: true

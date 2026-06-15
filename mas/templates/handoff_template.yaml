@@ -1,0 +1,61 @@
+# ============================================================
+# HANDOFF TEMPLATE
+# Every agent-to-agent transfer uses this structure.
+# ============================================================
+
+# --- EXPANDED FORMAT (human-readable, used in CLI output & CHECKPOINT.md) ---
+handoff:
+  # --- IDENTITY ---
+  handoff_id: ""                # ho-{project_id}-{sequence}
+  project_id: ""                # proj-{YYYYMMDD}-{NNN}-{slug}
+  timestamp: ""                 # ISO 8601
+
+  # --- PARTIES ---
+  from_agent: ""
+  to_agent: ""
+  authorized_by: ""             # Usually master_orchestrator
+
+  # --- CONTEXT ---
+  phase: ""
+  task_description: ""
+
+  # --- PAYLOAD ---
+  payload:
+    summary: ""                 # What was done before this handoff
+    artifacts_produced: []      # List of artifact references
+    decisions_made: []          # References to decision_log entries
+    open_questions: []          # Unresolved items
+    constraints_for_next: []    # What the receiving agent must respect
+    shared_state_fields_modified: []  # Which fields were changed
+
+  # --- TOKEN TRACKING ---
+  token_usage:
+    prompt_tokens: 0
+    completion_tokens: 0
+    total_tokens: 0
+
+  # --- ACCEPTANCE ---
+  acceptance:
+    status: "pending"           # pending | accepted | rejected | accepted_with_questions
+    rejection_reason: null
+    follow_up_questions: null
+    accepted_at: null
+
+# --- COMPACT WIRE FORMAT (inter-agent storage, omit empty/null fields) ---
+# Key mapping: id, pid, ts, from, to, auth, ph, task
+# Payload:     p.s (summary), p.art, p.dec, p.oq, p.con, p.mod
+# Tokens:      tok: [prompt, completion, total]
+# Acceptance:  acc (status only; rej, fq, aat added only if non-null)
+#
+# Example:
+#   id: ho-proj-YYYYMMDD-NNN-session-scheduler-003
+#   pid: proj-YYYYMMDD-NNN-session-scheduler
+#   ts: "2026-04-10T13:22:08+00:00"
+#   from: product_manager_agent
+#   to: master_orchestrator
+#   auth: master_orchestrator
+#   ph: planning
+#   task: Produce product plan
+#   p: {s: "Plan complete. 3 milestones defined.", art: [planning/product_plan.yaml], mod: [project_definition.product_plan]}
+#   tok: [0, 0, 0]
+#   acc: accepted

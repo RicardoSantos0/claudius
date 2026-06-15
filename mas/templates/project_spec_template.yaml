@@ -1,0 +1,33 @@
+# ============================================================
+# PROJECT SPECIFICATION TEMPLATE
+# Produced by Inquirer Agent after intake Q&A.
+# ============================================================
+
+clarified_specification:
+  # --- REQUIRED FIELDS (all must be completed) ---
+  project_goal: ""              # What is the desired outcome?
+  problem_statement: ""         # What problem does this solve?
+  scope:
+    inclusions: []              # What is explicitly in scope?
+    exclusions: []              # What is explicitly out of scope?
+  constraints: []               # What limitations exist?
+  success_criteria: []          # How will we measure success?
+  expected_outputs: []          # What deliverables are expected?
+
+  # --- RECOMMENDED FIELDS (at least 3 of 5) ---
+  stakeholders: []              # Who cares about the outcome?
+  dependencies: []              # What does this depend on?
+  timeline_expectations: ""     # Any time constraints?
+  quality_expectations: ""      # Any quality requirements?
+  prior_art: ""                 # Has anything similar been done?
+
+  # --- INTAKE METADATA ---
+  unresolved_ambiguities: []    # Items the user refused to clarify
+  assumptions_made: []          # Assumptions the Inquirer made
+  qa_rounds_completed: 0        # Number of clarification rounds used
+  specification_quality_score: 0.0  # Computed: (required/7*0.7) + (recommended/5*0.3)
+
+  # --- IDENTIFIERS ---
+  request_id: ""                # Set by Inquirer: req-{YYYYMMDD}-{sequence}
+  created_at: ""                # ISO 8601
+  created_by: "inquirer_agent"
