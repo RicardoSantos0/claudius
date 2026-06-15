@@ -39,11 +39,19 @@ def test_cli_help_lists_core_commands(runner):
         assert cmd in result.output
 
 
-def test_doctor_runs(runner):
-    """`mas doctor` produces its report and exits cleanly or with actionable guidance."""
-    result = runner.invoke(main, ["doctor"])
-    assert "MAS Doctor" in result.output, result.output
-    assert result.exit_code in (0, 1)
+def test_doctor_runs():
+    """`mas doctor` runs via the real CLI entrypoint (subprocess — how users run it)
+    and reports, exiting cleanly or with actionable guidance."""
+    import sys
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "core.cli", "doctor"],
+        capture_output=True, text=True, timeout=120,
+    )
+    combined = result.stdout + result.stderr
+    assert "MAS Doctor" in combined, f"rc={result.returncode}\n{combined}"
+    assert result.returncode in (0, 1)
 
 
 def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
