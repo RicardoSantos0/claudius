@@ -29,7 +29,8 @@ from typing import Optional
 
 import yaml
 
-ROOT = Path(__file__).parent.parent.parent.resolve()
+from core.paths import mas_root
+ROOT = mas_root()
 
 from .shared_state_manager import SharedStateManager
 from core.engine.audit_logger import get_logger

@@ -1,0 +1,175 @@
+# ============================================================
+# SYSTEM CONFIGURATION — MASTER CONFIG FILE
+# ============================================================
+
+system:
+  name: "Governed Multi-Agent Delivery System"
+  version: "0.2.0"
+  created_at: "2026-04-09T00:00:00Z"
+  governance_mode: "strict"  # strict | permissive
+
+# --- PATHS ---
+paths:
+  root: "./"
+  roster: "roster/"
+  policies: "policies/"
+  templates: "templates/"
+  projects: "projects/"
+  foundation: "foundation/"
+  agents: "agents/"
+  core: "core/"
+  tests: "tests/"
+  audit_log: "audit.log"
+  domains: "domains/"
+
+# --- DEFAULTS ---
+defaults:
+  trainer_authority_level: "L0_advisory"
+  spawn_mode: "draft_only"
+  max_spawns_per_project: 3
+  max_spawns_per_phase: 1
+  recursive_spawn_allowed: false
+  max_clarification_rounds: 3
+  max_questions_per_round: 7
+  specification_quality_threshold: 0.85
+  capability_match_threshold_strong: 80
+  capability_match_threshold_partial: 50
+  agent_probation_threshold: 60
+  max_agent_retries: 1
+  consultation_max_response_words: 500
+  consultation_max_followup_rounds: 1
+  phase_snapshot_enabled: true
+
+# --- LLM CONFIGURATION ---
+llm:
+  provider: "anthropic"
+  master_model: "claude-opus-4-7"       # Master Orchestrator default
+  default_model: "claude-sonnet-4-6"    # All other agents use Sonnet
+  max_tokens: 4096
+  temperature: 0.3
+  agent_overrides: {}                   # Per-agent overrides if needed
+
+# --- TRUST TIERS ---
+trust_tiers:
+  # Canonical trust tier definitions — registry_index.yaml is the single source of truth
+  # for per-agent tier assignments. This block exists for documentation only.
+  T0_core:
+    name: "Core"
+    agents: ["master_orchestrator", "scribe_agent"]
+    can_do: "Full authority within role boundaries"
+    cannot_do: "N/A within role"
+  T1_established:
+    name: "Established"
+    agents:
+      - "inquirer_agent"
+      - "product_manager_agent"
+      - "project_manager_agent"
+      - "evaluator_agent"
+      - "trainer_agent"
+      - "risk_advisor"
+      - "quality_advisor"
+      - "devils_advocate"
+      - "domain_expert"
+      - "efficiency_advisor"
+      - "hr_agent"
+    can_do: "Operate independently within role boundaries"
+    cannot_do: "Spawn, change governance, modify other agents"
+  T2_supervised:
+    name: "Supervised"
+    agents: ["spawner_agent"]
+    can_do: "Operate with Master oversight"
+    cannot_do: "Act without Master confirmation on high-impact actions"
+  T3_provisional:
+    name: "Provisional"
+    agents: []  # Spawned agents start here
+    can_do: "Operate in sandbox only"
+    cannot_do: "Access production state, interact externally unsupervised"
+
+# --- HUMAN APPROVAL ---
+human_approval:
+  mechanism: "cli"  # cli | api | ui
+  timeout_behavior: "pause_project"
+  required_for:
+    - "trust_tier_promotion"
+    - "governance_policy_changes"
+    - "unanimous_consultant_risk_override"
+    - "critical_risk_classification"
+    - "trainer_L1_promotion"
+    - "trainer_L2_promotion"
+
+# --- STORAGE ---
+storage:
+  provider: "filesystem"
+  format: "yaml"
+  backup_enabled: false
+  snapshot_retention:
+    delete_on_close: true
+    keep_latest_after_close: 0
+    write_final_state_copy: true
+  database:
+    provider: "sqlite"
+    url: "sqlite:///mas/data/episodic.db"
+    target_provider: "postgresql"
+    postgres_url: ""
+  vector:
+    provider: "chromadb"
+    enabled: false
+    collection: "mas-agent-context"
+    persist_directory: "mas/data/chromadb"
+    host: ""
+    port: 8000
+
+# --- AUDIT ---
+audit:
+  enabled: true
+  log_file: "audit.log"
+  log_format: "structured_yaml"
+  log_events:
+    - "message_sent"
+    - "state_write"
+    - "governance_violation"
+    - "handoff_created"
+    - "handoff_accepted"
+    - "handoff_rejected"
+    - "spawn_request"
+    - "spawn_result"
+    - "consultation_request"
+    - "consultation_synthesis"
+    - "phase_transition"
+    - "error"
+    - "human_escalation"
+    - "human_approval"
+
+# --- COMMUNICATION / TOKEN TRACKING ---
+communication:
+  token_tracking_enabled: true
+  token_counter_backend: "heuristic"   # heuristic | tiktoken
+  token_counter_model: "cl100k_base"   # used only if backend = tiktoken
+  wire_protocol_enabled: true
+  wire_protocol_version: "1.0"
+  wire_compliance_enforcement: "metric"  # metric (never governance violation)
+  consultation_reasoning_max_words: 100  # optional reasoning field cap (wire rsn)
+
+# --- SKILL BRIDGE ---
+skill_access:
+  enabled: true
+  skills_dir: "../skills"               # relative to mas/
+  audit_log: "projects/{project_id}/skill_audit_log.yaml"
+  unauthorized_outcome: "denied"         # denied (never governance violation for skill access)
+  # Keep this mapping aligned with core/engine/skill_bridge.py::SKILL_ACCESS.
+  per_agent_access:
+    master_orchestrator: ["*"]           # all skills
+    scribe_agent: ["research-extract", "research-sync", "mas-document", "mas-handoff"]
+    inquirer_agent: ["research-extract", "mas-clarify"]
+    product_manager_agent: ["research-extract", "research-sync", "mas-clarify"]
+    project_manager_agent: ["research-extract", "mas-plan", "mas-examine"]
+    hr_agent: []
+    evaluator_agent: ["research-extract", "mas-postmortem"]
+    trainer_agent: ["mas-postmortem"]
+    spawner_agent: ["skill-builder"]
+    risk_advisor: ["mas-examine"]
+    quality_advisor: ["mas-examine"]
+    devils_advocate: []
+    domain_expert: ["research-extract", "mas-examine"]
+    efficiency_advisor: []
+    session_scheduler: ["mas-review", "mas-handoff", "mas-logwork"]

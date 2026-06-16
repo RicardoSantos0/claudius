@@ -43,7 +43,8 @@ from core.utils.token_counter import TokenCounter
 
 _token_counter = TokenCounter()
 
-ROOT = Path(__file__).parent.parent.parent.resolve()
+from core.paths import mas_root
+ROOT = mas_root()
 
 try:
     from core.db import append_event as _append_event

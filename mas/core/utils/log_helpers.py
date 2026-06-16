@@ -15,8 +15,9 @@ from typing import Any, Optional
 
 from core.adapters import postgres_store
 
-# Ensure DB path resolves to mas/data/episodic.db regardless of module location
-DB_PATH = Path(__file__).parents[2] / "data" / "episodic.db"
+# Resolve DB path to <mas>/data/episodic.db in both source-tree and installed modes.
+from core.paths import mas_root
+DB_PATH = mas_root() / "data" / "episodic.db"
 
 
 # ---------------------------------------------------------------------------

@@ -11,13 +11,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# mas/core/utils/registry_seed.py
-# parents[0] = mas/core/utils
-# parents[1] = mas/core
-# parents[2] = mas
-# parents[3] = repo root (claude-config)
-DB_PATH = Path(__file__).parents[2] / "data" / "episodic.db"
-ROOT = Path(__file__).parents[3]
+# Roots resolved centrally so seeding works from a clone or an installed workspace.
+# DB_PATH -> <mas>/data/episodic.db ; ROOT -> repo root (holds agents/, skills/).
+from core.paths import mas_root, repo_root
+DB_PATH = mas_root() / "data" / "episodic.db"
+ROOT = repo_root()
 
 # Hardcoded tier map derived from agent model fields / known structure.
 # Agents with model=claude-opus-* are T0; others default based on known groupings.

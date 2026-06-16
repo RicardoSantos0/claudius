@@ -23,7 +23,8 @@ _token_counter = TokenCounter()
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 AGENTS_DIR = ROOT / "agents"
 
 # Maps agent_id → list of state paths the agent may read

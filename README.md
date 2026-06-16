@@ -101,6 +101,26 @@ This creates symlinks so `agents/`, `commands/`, and `skills/` are globally avai
 | `commands/` | `~/.claude/commands/` |
 | `skills/` | `~/.claude/skills/` |
 
+### Install as a package (pip)
+
+Prefer the CLI without cloning? Install the package and scaffold a workspace:
+
+```bash
+# Not yet on PyPI — install from the repo (or a built wheel):
+pip install git+https://github.com/RicardoSantos0/claudius.git
+# or:  pip install claudius-<version>-py3-none-any.whl
+
+mas init-workspace          # copies agents/skills/policies/templates/roster into ~/.mas
+mas doctor                  # verify the workspace (set MAS_HOME to use another dir)
+mas init my-first-project
+```
+
+The distribution name is `claudius`, the CLI command is `mas`, and the workspace
+defaults to `~/.mas` (override with `$MAS_HOME`). The wheel bundles the framework
+files as package data and `mas init-workspace` copies them into the workspace, so
+the CLI works without a clone. Running from a clone (source-tree mode, below) still
+works unchanged.
+
 ### Run a MAS project
 
 Activate the venv once per session (recommended — faster than `uv run`):
@@ -538,8 +558,9 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 - [docs/authoring-agents.md](docs/authoring-agents.md) — add/update an agent without breaking registry invariants
 - [docs/authoring-skills.md](docs/authoring-skills.md) — add/register/validate a skill
 - [docs/release-checklist.md](docs/release-checklist.md) — pre-release validators, tests, smoke checks
+- [docs/publishing.md](docs/publishing.md) — build, verify, and publish the pip package to PyPI
 
-> **Packaging:** this repository is **source-tree-only** — run `mas` via the activated venv or `uv run` from the repo root. It is not published as a pip-installable wheel; runtime data (policies, templates, roster, agents) is resolved from the repo, not from package data.
+> **Packaging:** claudius is a **pip-installable package** (distribution `claudius`, CLI `mas`, import root `core`). The wheel bundles the framework files (agents, skills, policies, templates, roster, foundation, domains, system config) as package data; `mas init-workspace` copies them into a writable workspace (`$MAS_HOME`, default `~/.mas`). It is **not yet on PyPI** — install from the repo or a built wheel (see [Install as a package](#install-as-a-package)). Running from a clone (source-tree mode) also works unchanged, resolving runtime data from the repo.
 
 ---
 

@@ -32,7 +32,8 @@ from typing import Optional
 # Load .env from repo root so ANTHROPIC_API_KEY is available in all entry points
 try:
     from dotenv import load_dotenv as _load_dotenv
-    _load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+    from core.paths import repo_root
+    _load_dotenv(repo_root() / ".env")
 except Exception:
     pass  # optional dependency / no .env present — proceed without it
 

@@ -1,11 +1,13 @@
 # Operation Modes
 
-This repo is **source-tree-only**. There is no pip-installable distributable —
-you run it from a checkout, either via an activated virtualenv or via `uv run`
-from the repo root. Do **not** try to `pip install mas`; `pyproject.toml` builds a
-wheel for the `core` package only as a build target, not a published artifact.
+claudius can be used three independent ways:
 
-There are two ways the repo is used. They are independent and can both be active.
+- **Pip install** — install the package (distribution `claudius`, CLI `mas`), then
+  `mas init-workspace` to create a writable workspace (`$MAS_HOME`, default `~/.mas`).
+  The wheel bundles the framework files; the workspace holds your editable copy. Not
+  yet on PyPI — install from the repo or a built wheel.
+- **Claude Code config mode** (Mode 1) and **source-tree MAS mode** (Mode 2), run
+  from a clone and described below. Both can be active alongside a pip install.
 
 ## Mode 1 — Claude Code config mode
 

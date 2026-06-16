@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 import click
 import yaml
 
-ROOT = Path(__file__).parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 
 # Load .env at the REPO ROOT (ROOT is mas/; the .env lives one level up) so
 # ANTHROPIC_API_KEY is available to agent_runner / `mas run`. (Previously loaded
@@ -197,7 +198,28 @@ def _resolve_sqlite_path(db_url: str) -> Path:
 # CLI group
 # ---------------------------------------------------------------------------
 
-@click.group()
+class _MasGroup(click.Group):
+    """CLI group that turns 'workspace not initialized' into friendly guidance.
+
+    In installed (pip) mode the framework's config lives in a workspace created by
+    `mas init-workspace`. Before that exists, config loads raise FileNotFoundError
+    on system_config.yaml; convert those to a clean message, not a traceback.
+    """
+
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except FileNotFoundError as exc:
+            from core.paths import is_installed, workspace_root
+            if is_installed() and "system_config.yaml" in str(exc):
+                raise click.ClickException(
+                    "No MAS workspace found. Run `mas init-workspace` to create one "
+                    f"(default {workspace_root()}, or set MAS_HOME), then retry."
+                ) from exc
+            raise
+
+
+@click.group(cls=_MasGroup)
 @click.version_option("0.2.0", prog_name="mas")
 def main():
     """Governed Multi-Agent Delivery System."""
@@ -332,6 +354,105 @@ def init(name_or_id: str, request_id: str, mode: str, target_area: str | None):
     if predecessor:
         click.echo(f"     Related     : {predecessor['project_id']} "
                    f"(family '{predecessor['family']}') — reuse {predecessor['summary_path']}")
+
+
+# ---------------------------------------------------------------------------
+# mas init-workspace — scaffold a writable workspace from the installed wheel
+# ---------------------------------------------------------------------------
+
+# Read-only framework assets a workspace needs, grouped by their source root.
+_WORKSPACE_REPO_ITEMS = ["agents", "skills"]                  # under repo root
+_WORKSPACE_MAS_ITEMS = [
+    "system_config.yaml", "policies", "templates",
+    "roster", "foundation", "domains",
+]                                                             # under mas/
+_WORKSPACE_RUNTIME_DIRS = ["projects", "data", "logs", "working_state"]  # writable, empty
+
+
+@main.command("init-workspace")
+@click.option("--path", "target", default=None, metavar="DIR",
+              help="Workspace directory (default: $MAS_HOME, else ~/.mas).")
+@click.option("--force", is_flag=True, default=False,
+              help="Overwrite framework files that already exist in the workspace.")
+def init_workspace(target: str | None, force: bool):
+    """Create a writable MAS workspace from the framework's bundled files.
+
+    A pip-installed wheel ships agents/skills/policies/templates/roster as
+    read-only package data. This copies them into a workspace ($MAS_HOME, default
+    ~/.mas) that mirrors the source-tree layout and creates the runtime dirs, so
+    `mas init/status/prompt/doctor` work outside a git clone. Safe to re-run:
+    existing files are kept unless --force is given.
+
+    Example: mas init-workspace
+             mas init-workspace --path ./my-workspace --force
+    """
+    import shutil
+    from core.paths import bundled_dir, workspace_root, mas_root, repo_root
+
+    dest = Path(target).expanduser().resolve() if target else workspace_root()
+
+    bundled = bundled_dir()
+    if bundled.exists():
+        repo_src, mas_src = bundled, bundled / "mas"
+        source_label = f"bundled package data ({bundled})"
+    else:
+        repo_src, mas_src = repo_root(), mas_root()
+        source_label = f"source tree ({repo_src})"
+
+    if dest == repo_src or dest == mas_src.parent:
+        click.echo(f"[error] Workspace target {dest} is the source itself — choose another --path.", err=True)
+        sys.exit(1)
+
+    # Never copy runtime/secret junk that may sit on disk in a source-tree copy.
+    ignore = shutil.ignore_patterns(
+        "__pycache__", "*.pyc", "*.pyo", ".venv", "browser_state",
+        "auth_info.json", "*.db", "*.sqlite", "*.sqlite3", "*.log",
+    )
+
+    click.echo(f"[mas init-workspace] dest : {dest}")
+    click.echo(f"                     from : {source_label}")
+    dest.mkdir(parents=True, exist_ok=True)
+
+    copied: list[Path] = []
+    skipped: list[Path] = []
+    missing: list[str] = []
+
+    def _place(src: Path, dst: Path) -> None:
+        if not src.exists():
+            missing.append(src.name)
+            return
+        if dst.exists() and not force:
+            skipped.append(dst)
+            return
+        if src.is_dir():
+            shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+        copied.append(dst)
+
+    for name in _WORKSPACE_REPO_ITEMS:
+        _place(repo_src / name, dest / name)
+    for name in _WORKSPACE_MAS_ITEMS:
+        _place(mas_src / name, dest / "mas" / name)
+    for name in _WORKSPACE_RUNTIME_DIRS:
+        (dest / "mas" / name).mkdir(parents=True, exist_ok=True)
+
+    click.echo(f"[ok] copied {len(copied)} item(s); skipped {len(skipped)} existing; runtime dirs ready.")
+    if skipped and not force:
+        click.echo("     (re-run with --force to overwrite existing framework files)")
+    if missing:
+        click.echo(f"[warn] source missing: {', '.join(sorted(set(missing)))}", err=True)
+
+    if (dest / "mas" / "system_config.yaml").exists():
+        click.echo("[ok] workspace ready.")
+        if target:
+            click.echo(f"     Point MAS at it: set MAS_HOME={dest}, then run `mas doctor`.")
+        else:
+            click.echo("     Run `mas doctor` to verify.")
+    else:
+        click.echo("[error] system_config.yaml missing after init — workspace incomplete.", err=True)
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -532,11 +653,15 @@ def doctor(project_id: str | None):
     _ds = len(list(skills_dir.glob("*/SKILL.md"))) if skills_dir.is_dir() else 0
     add("ok", "inventory", f"{_da} agent docs, {_ds} skill packages on disk")
 
-    # This repo is source-tree-only (no installable wheel; proj-008 d-001).
-    if (ROOT / "core" / "cli.py").exists() and (ROOT.parent / "pyproject.toml").exists():
+    # Runtime mode: source-tree clone, or installed wheel backed by a workspace.
+    from core.paths import is_installed, is_workspace_initialized, workspace_root
+    if not is_installed():
         add("ok", "runtime_mode", "source-tree (run via uv / activated venv from repo root)")
+    elif is_workspace_initialized():
+        add("ok", "runtime_mode", f"installed wheel + workspace at {workspace_root()}")
     else:
-        add("warn", "runtime_mode", "not running from the source tree; this repo is source-tree-only")
+        add("warn", "runtime_mode",
+            f"installed wheel but no workspace — run `mas init-workspace` (creates {workspace_root()})")
 
     # Backend checks
     try:
