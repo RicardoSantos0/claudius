@@ -43,6 +43,8 @@ mas/*.yaml
 mas/*.log
 mas/core/*.log
 mas/core/*.yaml
+# system_config.yaml is canonical config that MUST ship (the mas/*.yaml rule above caught it)
+!mas/system_config.yaml
 
 # Repo-root runtime logs
 logs/

@@ -10,9 +10,11 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-# mas/ root when this file is located at mas/core/utils/config.py
-ROOT = Path(__file__).parents[2]
-REPO_ROOT = ROOT.parent
+# Resolve roots via the central resolver so paths work both from a clone
+# (source-tree mode) and from an installed wheel + workspace (installed mode).
+from core.paths import mas_root, repo_root
+ROOT = mas_root()
+REPO_ROOT = repo_root()
 
 
 def _find_root() -> Path:

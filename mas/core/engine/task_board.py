@@ -38,7 +38,8 @@ from typing import Optional
 
 import yaml
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 
 VALID_TASK_STATUSES = {"planned", "assigned", "in_progress", "blocked", "completed", "failed"}
 VALID_MILESTONE_STATUSES = {"pending", "in_progress", "completed", "blocked"}

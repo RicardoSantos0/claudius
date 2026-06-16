@@ -39,11 +39,36 @@ def test_cli_help_lists_core_commands(runner):
         assert cmd in result.output
 
 
-def test_doctor_runs(runner):
-    """`mas doctor` produces its report and exits cleanly or with actionable guidance."""
-    result = runner.invoke(main, ["doctor"])
-    assert "MAS Doctor" in result.output, result.output
-    assert result.exit_code in (0, 1)
+def test_doctor_runs():
+    """`mas doctor` runs via the real CLI entrypoint (subprocess — how users run it)
+    and reports, exiting cleanly or with actionable guidance."""
+    import sys
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-m", "core.cli", "doctor"],
+        capture_output=True, text=True, timeout=120,
+    )
+    combined = result.stdout + result.stderr
+    assert "MAS Doctor" in combined, f"rc={result.returncode}\n{combined}"
+    assert result.returncode in (0, 1)
+
+
+def test_init_workspace_scaffolds_usable_layout(runner, tmp_path):
+    """`mas init-workspace --path` builds a workspace mirroring the source layout.
+
+    This is the install-path command: a pip-installed wheel copies the bundled
+    framework files into a workspace. Here (source tree / editable) it copies from
+    the repo, but the resulting layout + runtime dirs must be identical.
+    """
+    ws = tmp_path / "ws"
+    result = runner.invoke(main, ["init-workspace", "--path", str(ws)])
+    assert result.exit_code == 0, result.output
+    assert (ws / "mas" / "system_config.yaml").exists()
+    assert (ws / "agents").is_dir()
+    assert (ws / "mas" / "roster").is_dir()
+    for d in ("projects", "data", "logs", "working_state"):
+        assert (ws / "mas" / d).is_dir(), f"runtime dir missing: {d}"
 
 
 def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):

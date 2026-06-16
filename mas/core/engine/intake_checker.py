@@ -37,7 +37,8 @@ from typing import Any
 
 import yaml
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 
 REQUIRED_FIELDS = [
     "project_goal",

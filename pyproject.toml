@@ -1,5 +1,7 @@
 [project]
-name = "mas"
+# Distribution name (PyPI): `claudius`. The CLI command stays `mas` (see
+# [project.scripts]) and the import package is `core`.
+name = "claudius"
 version = "0.2.0"
 description = "claudius — a governed multi-agent delivery framework for Claude Code (CLI, reusable agents, MAS workflow skills, policies, templates)."
 readme = "README.md"
@@ -64,3 +66,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["mas/core"]
+
+# Bundle the read-only framework files into the wheel as package data under
+# core/_bundled/, mirroring the source-tree layout. `mas init-workspace` copies
+# them into a writable workspace ($MAS_HOME, default ~/.mas) so the CLI works
+# from a pip install, not only from a git clone. (core.paths.bundled_dir())
+[tool.hatch.build.targets.wheel.force-include]
+"agents" = "core/_bundled/agents"
+"skills" = "core/_bundled/skills"
+"mas/system_config.yaml" = "core/_bundled/mas/system_config.yaml"
+"mas/policies" = "core/_bundled/mas/policies"
+"mas/templates" = "core/_bundled/mas/templates"
+"mas/roster" = "core/_bundled/mas/roster"
+"mas/foundation" = "core/_bundled/mas/foundation"
+"mas/domains" = "core/_bundled/mas/domains"

@@ -15,7 +15,8 @@ from typing import Optional
 
 import yaml
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 REGISTRY_PATH = ROOT / "roster" / "registry_index.yaml"
 VERSION_HISTORY_PATH = ROOT / "roster" / "version_history.yaml"
 
