@@ -34,7 +34,7 @@ Issues = "https://github.com/RicardoSantos0/claudius/issues"
 
 [project.optional-dependencies]
 postgres = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.4",
 ]
 vector = [
     "chromadb>=0.5",
