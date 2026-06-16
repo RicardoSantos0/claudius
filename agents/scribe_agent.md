@@ -87,6 +87,14 @@ Every decision entry MUST include:
 
 A decision entry missing `rationale` or `alternatives_considered` is incomplete and MUST be flagged to Master before the phase closes.
 
+**Superseding a prior decision:** when a decision reverses, overrides, or replaces a
+previously recorded decision (in this or any earlier project), the new entry MUST
+include `supersedes: <project_id>/<decision_id>`. When the prior decision's log is
+accessible, also add a `superseded_by: <project_id>/<decision_id>` back-link to that
+older entry. This keeps decision history traceable instead of silently contradicting
+a recorded decision. (Example: a project that adopts an installable wheel supersedes a
+prior `source-tree-only` packaging decision.)
+
 ## Recording Artifacts
 When an agent produces an artifact, use `shared_state_manager.py append` to add to `artifacts.documents` (see `_utilities.md`).
 
