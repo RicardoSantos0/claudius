@@ -16,11 +16,9 @@ import yaml
 
 
 def _find_repo_root() -> Path:
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    raise RuntimeError("Could not locate repo root (pyproject.toml not found)")
+    # Repo root in a clone, or the $MAS_HOME workspace root when pip-installed.
+    from core.paths import repo_root
+    return repo_root()
 
 
 @dataclass

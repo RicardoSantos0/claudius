@@ -28,14 +28,13 @@ import yaml
 
 
 def _find_repo_root() -> Path:
-    """Walk up from this file until pyproject.toml is found."""
-    current = Path(__file__).resolve()
-    for parent in current.parents:
-        if (parent / "pyproject.toml").exists():
-            return parent
-    raise RuntimeError(
-        "Could not locate repo root (pyproject.toml not found in any parent directory)"
-    )
+    """Repo root in a clone, or the $MAS_HOME workspace root when pip-installed.
+
+    Delegates to core.paths.repo_root() so installed mode resolves to the workspace
+    (which holds mas/) instead of failing to find a pyproject.toml above site-packages.
+    """
+    from core.paths import repo_root
+    return repo_root()
 
 
 @dataclass

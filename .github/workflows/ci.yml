@@ -5,6 +5,10 @@
 #   validate          — agent/skill registry consistency + archive cleanliness
 #   test              — MAS test suite on the supported matrix (Python 3.11/3.12/3.13)
 #   build             — sdist + wheel packaging check
+#   package-smoke     — build the wheel, assert it bundles the framework assets,
+#                       install it in a clean venv, and run the installed-mode flow
+#                       (init-workspace -> doctor -> init). Guards installed mode,
+#                       which the source-tree pytest suite never exercises.
 #   powershell-syntax — static parse of setup.ps1 (Windows)
 #
 # Notes:
@@ -88,6 +92,58 @@ jobs:
         run: uv build
       - name: Verify artifacts
         run: ls -l dist/*.tar.gz dist/*.whl
+
+  package-smoke:
+    # Proves claudius works as an INSTALLED pip package (not just a clone). The
+    # source-tree pytest suite runs in editable mode and never exercises this path,
+    # so installed-mode regressions (e.g. a pre-init doctor crash, or the wheel
+    # dropping its bundled assets) would otherwise reach users unnoticed.
+    name: Installed-wheel smoke (pip)
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Set up uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Build wheel
+        run: uv build
+      - name: Assert wheel bundles assets and excludes tests/junk
+        run: |
+          python - <<'PY'
+          import glob, zipfile
+          whl = sorted(glob.glob("dist/*.whl"))[-1]
+          names = zipfile.ZipFile(whl).namelist()
+          for prefix in ("core/_bundled/agents/", "core/_bundled/skills/", "core/_bundled/mas/roster/"):
+              assert any(n.startswith(prefix) for n in names), f"wheel missing {prefix}"
+          assert "core/_bundled/mas/system_config.yaml" in names, "wheel missing bundled system_config.yaml"
+          assert not any(n.startswith("tests/") or "/tests/" in n for n in names), "tests leaked into wheel"
+          assert not any(n.endswith((".db", ".sqlite", ".sqlite3", ".log")) for n in names), "runtime junk in wheel"
+          print(f"wheel OK: {whl} ({len(names)} members)")
+          PY
+      - name: Install wheel in a clean venv and run the installed-mode flow
+        run: |
+          set -euo pipefail
+          python -m venv "${RUNNER_TEMP}/venv"
+          "${RUNNER_TEMP}/venv/bin/pip" install --quiet "$(ls dist/*.whl)"
+          MAS="${RUNNER_TEMP}/venv/bin/mas"
+          export MAS_HOME="${RUNNER_TEMP}/ws"
+          cd "${RUNNER_TEMP}"   # run outside the repo so source-tree mode cannot be detected
+          "$MAS" --version
+          # Pre-init: friendly guidance, never a raw traceback (regression guard for the
+          # FileNotFoundError crash fixed by _MasGroup).
+          "$MAS" doctor > pre.txt 2>&1 || true
+          grep -q "init-workspace" pre.txt
+          if grep -qi "Traceback" pre.txt; then echo "FAIL: doctor crashed pre-init"; cat pre.txt; exit 1; fi
+          # Scaffold the workspace from bundled package data, then it must be healthy.
+          "$MAS" init-workspace
+          "$MAS" doctor | tee post.txt
+          grep -q "installed wheel + workspace" post.txt
+          grep -q "fail=0" post.txt
+          # Full lifecycle entrypoint works post-install.
+          pid="$("$MAS" init ci-demo | grep -oE 'proj-[0-9]{8}-[0-9]{3}-ci-demo' | head -1)"
+          "$MAS" status "$pid"
+          echo "installed-mode smoke OK ($pid)"
 
   powershell-syntax:
     name: PowerShell setup script syntax
