@@ -37,7 +37,7 @@ postgres = [
     "psycopg[binary]>=3.2",
 ]
 vector = [
-    "chromadb>=0.5",
+    "chromadb>=1.5.9",
 ]
 
 [project.scripts]
