@@ -27,7 +27,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.92.0"
+version = "0.109.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -39,9 +39,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/01/2d/fc5c5a369db977efbaa646d77ba42b38a6de4e95789884032b0e2e3fc834/anthropic-0.92.0.tar.gz", hash = "sha256:d1e792ed0692379452a1af6b266df495e973c3695cd0aace2a108b838393cbc4", size = 652420, upload-time = "2026-04-08T16:55:35.37Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/b7/9a8e2f79011e89dd6eeb599c27332aed765dac9d6fbee3a55e68e4e3ec25/anthropic-0.109.2.tar.gz", hash = "sha256:d37db299597c7bc124b49b767ff135f1e6456b64af2b2fad4b63b2a1df333cf0", size = 927559, upload-time = "2026-06-15T17:30:25.024Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/21/bf5b5ab10b6932c5c43eaa66b6e3f256de569cf0323d89f9cc281a0d0f39/anthropic-0.92.0-py3-none-any.whl", hash = "sha256:f92a4bd065d5cab90a96b65bb44e473bf7c6fe731a743cd156e9ad1d245c381e", size = 621195, upload-time = "2026-04-08T16:55:33.639Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/f2/bee5de8a2699fc8a3cce34d61c7a2626a2c310ddde7ea5611327eb0ddbe9/anthropic-0.109.2-py3-none-any.whl", hash = "sha256:e0fb4ca5df0ed983248c9c6c3242adc81d9cfddb8725902da53698554117abac", size = 923800, upload-time = "2026-06-15T17:30:23.124Z" },
 ]
 
 [[package]]
@@ -317,7 +317,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.49.0" },
+    { name = "anthropic", specifier = ">=0.109.2" },
     { name = "chromadb", marker = "extra == 'vector'", specifier = ">=0.5" },
     { name = "click", specifier = ">=8.1" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.2" },
