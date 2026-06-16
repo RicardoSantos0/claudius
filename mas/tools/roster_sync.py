@@ -22,8 +22,9 @@ from pathlib import Path
 
 import yaml
 
-# Defaults relative to mas/ root
-_MAS_ROOT = Path(__file__).parents[1]
+# Defaults relative to the mas/ root (resolved for clone or installed workspace)
+from core.paths import mas_root
+_MAS_ROOT = mas_root()
 DEFAULT_DB_PATH = _MAS_ROOT / "data" / "episodic.db"
 DEFAULT_REGISTRY_PATH = _MAS_ROOT / "roster" / "registry_canonical.yaml"
 

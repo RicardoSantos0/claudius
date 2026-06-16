@@ -70,7 +70,8 @@ CORE_THREE_CONSULTANTS: list[str] = [
 # Risk levels
 RISK_LEVELS = ("none", "low", "medium", "high")
 
-DOMAINS_DIR = Path(__file__).parent.parent.parent / "domains"
+from core.paths import mas_root
+DOMAINS_DIR = mas_root() / "domains"
 
 
 # ---------------------------------------------------------------------------

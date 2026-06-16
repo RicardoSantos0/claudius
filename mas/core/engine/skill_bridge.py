@@ -30,8 +30,9 @@ except Exception:
     _DB_PATH = None  # type: ignore
     _db_connect = None  # type: ignore
 
-ROOT = Path(__file__).parent.parent.parent  # mas/
-REPO_ROOT = ROOT.parent                    # claude-config/
+from core.paths import mas_root
+ROOT = mas_root()  # mas/
+REPO_ROOT = ROOT.parent                    # repo root (holds skills/)
 SKILLS_DIR = REPO_ROOT / "skills"
 
 SKILL_ACCESS: dict[str, list[str]] = {

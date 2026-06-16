@@ -54,6 +54,23 @@ def test_doctor_runs():
     assert result.returncode in (0, 1)
 
 
+def test_init_workspace_scaffolds_usable_layout(runner, tmp_path):
+    """`mas init-workspace --path` builds a workspace mirroring the source layout.
+
+    This is the install-path command: a pip-installed wheel copies the bundled
+    framework files into a workspace. Here (source tree / editable) it copies from
+    the repo, but the resulting layout + runtime dirs must be identical.
+    """
+    ws = tmp_path / "ws"
+    result = runner.invoke(main, ["init-workspace", "--path", str(ws)])
+    assert result.exit_code == 0, result.output
+    assert (ws / "mas" / "system_config.yaml").exists()
+    assert (ws / "agents").is_dir()
+    assert (ws / "mas" / "roster").is_dir()
+    for d in ("projects", "data", "logs", "working_state"):
+        assert (ws / "mas" / d).is_dir(), f"runtime dir missing: {d}"
+
+
 def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
     """A fresh `mas init` -> `status` -> `prompt` lifecycle works in an isolated dir."""
     import core.engine.shared_state_manager as ssm

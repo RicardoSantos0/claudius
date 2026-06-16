@@ -30,7 +30,8 @@ from typing import Any
 
 import yaml
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 
 from core.engine.access_control import (
     ACCESS_CONTROL, is_authorized, get_mode, get_mutability,

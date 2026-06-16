@@ -8,7 +8,8 @@ import yaml
 from datetime import datetime, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).parent.parent.parent
+from core.paths import mas_root
+ROOT = mas_root()
 DEFAULT_LOG = ROOT / "audit.log"
 
 

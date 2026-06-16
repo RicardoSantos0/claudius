@@ -34,7 +34,8 @@ import yaml
 from core.db import DB_PATH, _get_connection
 from core.utils.log_helpers import append_event
 
-ROOT = Path(__file__).resolve().parents[2]
+from core.paths import mas_root
+ROOT = mas_root()
 PROJECTS_DIR = ROOT / "projects"
 
 _ACTOR = "master_orchestrator"

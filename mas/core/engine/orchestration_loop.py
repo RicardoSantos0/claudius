@@ -35,7 +35,8 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-ROOT = Path(__file__).parent.parent.parent.parent  # repo root (claude-config/)
+from core.paths import repo_root
+ROOT = repo_root()  # repo root (holds agents/, skills/)
 
 # ---------------------------------------------------------------------------
 # Config / result types
