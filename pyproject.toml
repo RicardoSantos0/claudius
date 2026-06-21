@@ -39,9 +39,13 @@ postgres = [
 vector = [
     "chromadb>=0.5",
 ]
+server = [
+    "mcp>=1.0",
+]
 
 [project.scripts]
 mas = "core.cli:main"
+mas-server = "core.server:main"
 
 [dependency-groups]
 dev = [
