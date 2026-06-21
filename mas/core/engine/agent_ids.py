@@ -61,6 +61,18 @@ _ALIASES: dict[str, str] = {
     "efficiency": "efficiency_advisor",
     "session_scheduler": "session_scheduler",
     "session-scheduler": "session_scheduler",
+    # Delivery engineers (codex-mas emits kebab-case; canonical is snake_case)
+    "canonical_engineer": "canonical_engineer",
+    "canonical-engineer": "canonical_engineer",
+    "analysis_engineer": "analysis_engineer",
+    "analysis-engineer": "analysis_engineer",
+    "integration_engineer": "integration_engineer",
+    "integration-engineer": "integration_engineer",
+    "reliability_engineer": "reliability_engineer",
+    "reliability-engineer": "reliability_engineer",
+    # Provisional / specialist
+    "nlp_taxonomy_specialist": "nlp_taxonomy_specialist",
+    "nlp-taxonomy-specialist": "nlp_taxonomy_specialist",
 }
 
 

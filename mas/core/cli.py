@@ -2194,6 +2194,95 @@ def prompt(project_id: str, agent_id: str | None):
 
 
 # ---------------------------------------------------------------------------
+# mas ingest — the other half of provider-agnostic manual mode (M-c)
+# ---------------------------------------------------------------------------
+
+@main.command()
+@click.argument("project_id")
+@click.option("--agent", "agent_id", default=None,
+              help="Acting agent (default: the current phase's next agent).")
+@click.option("--response-file", "response_file", default=None,
+              help="File with the LLM's raw response (default: read stdin).")
+@click.option("--show-prompt/--no-show-prompt", default=True,
+              help="After applying, print the next agent prompt (default: yes).")
+def ingest(project_id: str, agent_id: str | None, response_file: str | None, show_prompt: bool):
+    """Ingest an LLM response (from ANY provider) and apply it to governed state.
+
+    The provider-agnostic manual loop:  `mas prompt` -> run in any LLM -> `mas ingest`.
+    Parses the wire block from the pasted/piped response, records the agent's work as a
+    governed handoff, applies the next action (advance phase / delegate / escalate /
+    consult / wait), then prints the next prompt so the loop continues.
+
+    Example:
+
+    \b
+        mas prompt  proj-... > p.txt        # run p.txt in ChatGPT/Gemini/LM Studio/Claude
+        mas ingest  proj-... < reply.txt    # paste that reply back; engine advances
+    """
+    _require_project(project_id)
+
+    raw = Path(response_file).read_text(encoding="utf-8") if response_file else sys.stdin.read()
+    if not raw.strip():
+        click.echo("[error] empty response (use --response-file or pipe via stdin)", err=True)
+        sys.exit(1)
+
+    from core.engine.manual_loop import apply_ingest
+    from core.engine.shared_state_manager import SharedStateManager
+    from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig
+
+    try:
+        res = apply_ingest(project_id, raw, agent_id)
+    except Exception as exc:
+        click.echo(f"[error] could not record handoff: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(
+        f"[ingest] {project_id}  phase={res.phase_before} acting={res.acting_agent} "
+        f"status={res.status or '—'} action={res.action}"
+    )
+    if res.parse_errors:
+        click.echo(f"  parse warnings: {', '.join(res.parse_errors)}")
+    if res.knowledge_request:
+        click.echo(f"  KNOWLEDGE_REQUEST: {res.knowledge_request}")
+    click.echo(
+        f"  recorded handoff {res.handoff_id} "
+        f"(decisions={res.decisions} artifacts={res.artifacts})"
+    )
+
+    if res.action == "advance_phase":
+        click.echo(f"  phase advanced: {res.phase_before} -> {res.phase_after}")
+    elif res.action == "delegate" and res.delegated_to:
+        click.echo(f"  delegated to {res.delegated_to} (pending handoff {res.delegation_handoff_id or ''})")
+    elif res.action == "delegate" and res.delegate_error:
+        click.echo(f"[warn] delegate handoff failed: {res.delegate_error}")
+    elif res.action == "escalate":
+        click.echo("  ESCALATION required — human decision needed; phase not advanced.")
+    elif res.action == "consult":
+        click.echo("  CONSULTATION requested — run the consultant panel; phase not advanced.")
+    else:
+        click.echo(f"  no phase change (action={res.action}).")
+
+    if not show_prompt:
+        return
+
+    # Emit the next prompt so the manual loop continues.
+    sm = SharedStateManager(project_id)
+    loop = OrchestrationLoop(LoopConfig(project_id=project_id))
+    state = sm.load()
+    cur_phase = state.get("core_identity", {}).get("current_phase", res.phase_after)
+    if cur_phase == "closed" or state.get("core_identity", {}).get("status") == "closed":
+        click.echo("\n[ingest] project closed — no further prompt.")
+        return
+    pend = _pending_handoffs_from_state(state)
+    if pend:
+        nxt = pend[0].get("to_agent") or pend[0].get("to") or loop._determine_next_agent(state)
+    else:
+        nxt = loop._determine_next_agent(state)
+    click.echo(f"\n# NEXT: run this prompt in any LLM, then `mas ingest {project_id}` again\n")
+    _emit_prompt(project_id, nxt, _assemble_prompt(project_id, nxt, state))
+
+
+# ---------------------------------------------------------------------------
 # mas registry (subgroup)
 # ---------------------------------------------------------------------------
 
