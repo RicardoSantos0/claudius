@@ -1,0 +1,17 @@
+{
+  "servers": {
+    "mas": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--extra",
+        "server",
+        "mas-server"
+      ],
+      "env": {
+        "UV_LINK_MODE": "copy"
+      }
+    }
+  }
+}

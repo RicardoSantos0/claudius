@@ -1,0 +1,30 @@
+{
+  "name": "mas-governance",
+  "version": "0.2.0",
+  "description": "Governed Multi-Agent Delivery System (MAS) over MCP.\n\nAliases: @mas, mas-governance, MAS.\n\nUse this plugin to run, resume, and inspect governed MAS projects from Codex: intake, planning, capability/HR, formal handoffs, evaluation, training, knowledge search, and observability. It connects to the same provider-agnostic mas-server engine that Claude Code uses (the d-009 'one core, many surfaces' North Star), so Codex becomes a first-class surface over the MAS.\n\nFor requests like 'start a governed MAS project', 'resume the MAS project', or 'show pending MAS handoffs', use the mas_* MCP tools.",
+  "author": {
+    "name": "Ricardo Santos",
+    "url": "https://github.com/RicardoSantos0"
+  },
+  "homepage": "https://github.com/RicardoSantos0/claudius",
+  "repository": "https://github.com/RicardoSantos0/claudius",
+  "license": "UNLICENSED",
+  "keywords": ["mcp", "workflow", "governance", "multi-agent", "mas"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "MAS Governance",
+    "shortDescription": "Governed multi-agent workflow for Codex",
+    "longDescription": "Runs the MAS governance engine (60-tool mas-server MCP) and operator skills inside Codex. Drive governed project state — intake, planning, handoffs, evaluation, training, knowledge, observability — over the same core Claude Code uses.",
+    "developerName": "Ricardo Santos",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Read", "Write"],
+    "websiteURL": "https://github.com/RicardoSantos0/claudius",
+    "defaultPrompt": [
+      "Show the MAS roster and any active projects.",
+      "Resume the current MAS project from its checkpoint.",
+      "Show pending MAS handoffs and the next action."
+    ],
+    "brandColor": "#1D4ED8"
+  }
+}
