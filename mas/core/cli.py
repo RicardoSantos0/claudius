@@ -220,7 +220,7 @@ class _MasGroup(click.Group):
 
 
 @click.group(cls=_MasGroup)
-@click.version_option("0.2.0", prog_name="mas")
+@click.version_option("0.3.0", prog_name="mas")
 def main():
     """Governed Multi-Agent Delivery System."""
 
@@ -558,6 +558,23 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
     except Exception as exc:
         add("warn", "skills", f"Cannot query skill events: {exc}")
 
+    # 8. Decision / task store consistency (G3)
+    try:
+        from core.engine.consistency_check import check_project as _consistency
+        report = _consistency(project_id, projects_root=projects_dir)
+        if report.ok:
+            add("ok", "consistency", "decision and task stores consistent")
+        else:
+            for f in report.findings:
+                sev = "fail" if f.get("severity") == "high" else "warn"
+                if f.get("check") == "decisions":
+                    add(sev, "consistency", f"{f['direction']} decisions {f.get('ids')}: {f['detail']}")
+                else:
+                    add(sev, "consistency",
+                        f"task store drift state_only={f.get('state_only')} board_only={f.get('board_only')}")
+    except Exception as exc:
+        add("warn", "consistency", f"Cannot check consistency: {exc}")
+
     return checks
 
 
@@ -569,6 +586,8 @@ def _doctor_next_action(checks: list[tuple[str, str, str]], project_id: str, sta
         return f"Run `mas init {project_id}` or check the project ID."
     if "artifact" in fails:
         return "Create missing required artifacts before advancing the phase."
+    if "consistency" in fails:
+        return "Reconcile decision/task store drift (decisions on disk are missing from canonical state)."
     if "consultation" in warns:
         return "Trigger required consultation: add `consultation_trigger` to next Master response."
     if "skills" in warns:
@@ -2154,19 +2173,18 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
 
 
 # ---------------------------------------------------------------------------
-# mas prompt — assemble the next agent prompt (for Claude Code mode)
+# mas prompt — assemble the next agent prompt for any manual surface
 # ---------------------------------------------------------------------------
 
 @main.command()
 @click.argument("project_id")
 @click.argument("agent_id", required=False, default=None)
 def prompt(project_id: str, agent_id: str | None):
-    """Assemble and print the next agent's prompt for Claude Code mode.
+    """Assemble and print the next agent's prompt for manual/provider-neutral mode.
 
-    When ANTHROPIC_API_KEY is unavailable (Claude Pro only), use this command
-    to get the assembled prompt, then spawn the agent manually via Agent() in
-    Claude Code. The agent's wire-format response can then be applied to state
-    using the shared_state_manager and handoff_engine directly.
+    Use this command to get the governed prompt, run it in Claude Code, Codex,
+    ChatGPT, Gemini, Copilot, LM Studio, Ollama, or another LLM surface, then
+    apply the model's wire-format reply with `mas ingest`.
 
     If AGENT_ID is omitted, determines the next agent automatically from state.
 

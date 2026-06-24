@@ -103,9 +103,22 @@ def mas_decisions(project_id: str) -> str:
 
 @mcp.tool()
 def mas_milestones(project_id: str) -> str:
-    """Return execution milestones and tasks for a project."""
-    ex = _sm(project_id).load().get("execution", {})
-    return _yaml({"milestones": ex.get("milestones", []), "tasks": ex.get("tasks", [])})
+    """Return execution milestones and tasks for a project.
+
+    Prefers the TaskBoard (canonical, matching mas_list_tasks / mas_create_task and
+    the evaluator); falls back to the legacy shared_state.execution view only when
+    the board is empty. This ends the divergence where mas_milestones showed empty
+    while the materialized board was populated. mas_consistency_check flags any
+    remaining drift between the two (G3)."""
+    from core.engine.task_board import TaskBoard
+    board = TaskBoard(project_id)
+    milestones = board.list_milestones()
+    tasks = board.list_tasks()
+    if not milestones and not tasks:
+        ex = _sm(project_id).load().get("execution", {}) or {}
+        milestones = ex.get("milestones", [])
+        tasks = ex.get("tasks", [])
+    return _yaml({"milestones": milestones, "tasks": tasks})
 
 
 @mcp.tool()
@@ -836,11 +849,45 @@ def mas_slo_report(project_id: str, operation: str = "", limit: int = 500) -> st
 
 @mcp.tool()
 def mas_lifecycle_check(project_id: str, phase: str) -> str:
-    """Check lifecycle artifact invariants for a project phase. Returns YAML: passed, violations."""
+    """Check lifecycle artifact invariants for a project phase. Returns YAML: passed, violations, warnings.
+
+    For phase == 'execution' this also runs the G1 task-board gate: a project may
+    not enter execution with an empty task board (blocks in standard mode, warns
+    in lite). Surfaced here so every provider surface gates on it identically.
+    """
     import yaml
-    from core.engine.lifecycle_guard import LifecycleGuard
+    from core.engine.lifecycle_guard import LifecycleGuard, check_execution_entry
     result = LifecycleGuard().check_phase_artifacts(phase, resolve_project_dir(project_id))
-    return yaml.dump({"passed": result.passed, "violations": result.violations},
+    violations = list(result.violations)
+    warnings = list(result.warnings)
+    passed = result.passed
+
+    if phase == "execution":
+        try:
+            from core.engine.task_board import TaskBoard
+            mode = (_sm(project_id).load().get("core_identity", {}) or {}).get("mode", "standard")
+            entry = check_execution_entry({"tasks": TaskBoard(project_id).list_tasks()}, mode=mode)
+            violations.extend(entry.violations)
+            warnings.extend(entry.warnings)
+            passed = passed and entry.passed
+        except Exception as exc:  # never let the gate crash the artifact check
+            warnings.append({"invariant": "execution-entry-gate",
+                             "detail": f"gate check skipped: {exc}", "severity": "warn"})
+
+    return yaml.dump({"passed": passed, "violations": violations, "warnings": warnings},
+                     default_flow_style=False, allow_unicode=True)
+
+
+@mcp.tool()
+def mas_consistency_check(project_id: str) -> str:
+    """Check decision/task store consistency for a project (G3). Returns YAML: ok, findings.
+
+    Flags decisions present on disk but missing from canonical state (high; data-loss
+    risk) and divergence between shared_state.execution tasks and the TaskBoard."""
+    import yaml
+    from core.engine.consistency_check import check_project
+    report = check_project(project_id)
+    return yaml.dump({"ok": report.ok, "findings": report.findings},
                      default_flow_style=False, allow_unicode=True)
 
 

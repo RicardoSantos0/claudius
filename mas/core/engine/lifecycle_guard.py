@@ -183,3 +183,39 @@ def expire_stale_handoffs(
             still_pending.append(handoff)
 
     return still_pending, auto_expired
+
+
+# ---------------------------------------------------------------------------
+# G1 — execution-entry task-board gate
+# (proj-YYYYMMDD-NNN-mas-manual-loop-guardrails)
+# ---------------------------------------------------------------------------
+
+def check_execution_entry(
+    task_board_data: dict | None,
+    *,
+    mode: str = "standard",
+) -> GuardResult:
+    """Guard the transition into the *execution* phase.
+
+    A project must have a materialized task board (>= 1 task) before it enters
+    execution — the gap that let proj-YYYYMMDD-NNN cross into execution with an
+    empty board. In standard mode an empty board blocks; in lite mode it warns
+    only. Pure function (no filesystem) so callers may attempt
+    ``TaskBoard.sync_from_execution_plan()`` first and re-check.
+    """
+    tasks = (task_board_data or {}).get("tasks") or []
+    if tasks:
+        return GuardResult(passed=True)
+
+    entry = {
+        "invariant": "no-execution-without-task-board",
+        "detail": (
+            "task board has no tasks; populate it (or sync from the execution "
+            "plan) before entering execution"
+        ),
+        "severity": "block",
+    }
+    if mode == "lite":
+        entry["severity"] = "warn"
+        return GuardResult(passed=True, warnings=[entry])
+    return GuardResult(passed=False, violations=[entry])

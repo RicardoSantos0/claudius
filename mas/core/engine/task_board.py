@@ -79,9 +79,10 @@ class TaskBoard:
         self.execution_dir.mkdir(parents=True, exist_ok=True)
 
     def _load(self) -> dict:
-        """Load task board from disk. If absent but execution_plan.yaml exists, auto-sync."""
+        """Load task board from disk. If absent but an execution_plan.yaml exists
+        (in execution/ or the sibling planning/), auto-sync from it."""
         if not self.board_path.exists():
-            if self.plan_path.exists():
+            if self._find_plan_path() is not None:
                 self.sync_from_execution_plan()
             else:
                 return {"tasks": [], "milestones": []}
@@ -91,19 +92,81 @@ class TaskBoard:
         data.setdefault("milestones", [])
         return data
 
+    def _find_plan_path(self) -> Optional[Path]:
+        """Locate the execution plan in execution/ (preferred) or sibling planning/."""
+        if self.plan_path.exists():
+            return self.plan_path
+        alt = self.execution_dir.parent / "planning" / "execution_plan.yaml"
+        return alt if alt.exists() else None
+
+    @staticmethod
+    def _normalize_plan_milestone(m: dict) -> dict:
+        """Map the alternate (Codex) milestone schema to the canonical one.
+
+        Raises ValueError if no id can be resolved — never silently drop the key
+        (the failure that left proj-YYYYMMDD-NNN's board empty)."""
+        if not isinstance(m, dict):
+            raise ValueError(f"execution plan milestone is not a mapping: {m!r}")
+        out = dict(m)
+        if "milestone_id" not in out and "id" in out:
+            out["milestone_id"] = out.pop("id")
+        if "completion_criteria" not in out and "exit_criteria" in out:
+            out["completion_criteria"] = out.pop("exit_criteria")
+        if "task_ids" not in out and "tasks" in out:
+            out["task_ids"] = out.pop("tasks")
+        if not out.get("milestone_id"):
+            raise ValueError(f"execution plan milestone missing id/milestone_id: {m!r}")
+        out.setdefault("task_ids", [])
+        return out
+
+    @staticmethod
+    def _normalize_plan_task(t: dict, milestone_backref: dict) -> dict:
+        """Map the alternate (Codex) task schema to canonical and infer the milestone
+        backref from milestone.task_ids. Raises ValueError if no id can be resolved."""
+        if not isinstance(t, dict):
+            raise ValueError(f"execution plan task is not a mapping: {t!r}")
+        out = dict(t)
+        if "task_id" not in out and "id" in out:
+            out["task_id"] = out.pop("id")
+        if "description" not in out and "title" in out:
+            out["description"] = out.pop("title")
+        if "assigned_to" not in out and "owner" in out:
+            out["assigned_to"] = out.pop("owner")
+        if "dependencies" not in out and "depends_on" in out:
+            out["dependencies"] = out.pop("depends_on")
+        if not out.get("task_id"):
+            raise ValueError(f"execution plan task missing id/task_id: {t!r}")
+        if not out.get("milestone"):
+            out["milestone"] = milestone_backref.get(out["task_id"])
+        out.setdefault("dependencies", [])
+        out.setdefault("status", "planned")
+        return out
+
     def sync_from_execution_plan(self) -> int:
         """
-        Populate task_board.yaml from an existing execution_plan.yaml.
-        Idempotent: merges by task_id/milestone_id, skipping duplicates.
+        Populate task_board.yaml from an execution_plan.yaml found in execution/
+        (preferred) or the sibling planning/ directory.
+
+        Normalizes the alternate (Codex) plan schema (id/title/owner/depends_on/
+        exit_criteria/milestone-tasks) to the canonical board schema, and RAISES on
+        entries with no resolvable id rather than silently appending None-keyed
+        records. Idempotent: merges by milestone_id/task_id, skipping duplicates.
         Returns the number of tasks written.
         """
-        if not self.plan_path.exists():
-            raise FileNotFoundError(f"No execution_plan.yaml at {self.plan_path}")
-        with open(self.plan_path, encoding="utf-8") as f:
+        plan_path = self._find_plan_path()
+        if plan_path is None:
+            raise FileNotFoundError(
+                f"No execution_plan.yaml in {self.execution_dir} or sibling planning/"
+            )
+        with open(plan_path, encoding="utf-8") as f:
             plan = yaml.safe_load(f) or {}
 
-        milestones = plan.get("milestones", [])
-        tasks = plan.get("tasks", [])
+        milestones = [self._normalize_plan_milestone(m) for m in plan.get("milestones", [])]
+        backref: dict = {}
+        for m in milestones:
+            for tid in m.get("task_ids", []) or []:
+                backref[tid] = m["milestone_id"]
+        tasks = [self._normalize_plan_task(t, backref) for t in plan.get("tasks", [])]
 
         existing = {"tasks": [], "milestones": []}
         if self.board_path.exists():
@@ -116,12 +179,12 @@ class TaskBoard:
         existing_task_ids = {t["task_id"] for t in existing["tasks"]}
 
         for ms in milestones:
-            if ms.get("milestone_id") not in existing_ms_ids:
+            if ms["milestone_id"] not in existing_ms_ids:
                 existing["milestones"].append(ms)
 
         added = 0
         for task in tasks:
-            if task.get("task_id") not in existing_task_ids:
+            if task["task_id"] not in existing_task_ids:
                 existing["tasks"].append(task)
                 added += 1
 
@@ -185,6 +248,10 @@ class TaskBoard:
         data["milestones"].append(milestone)
         self._save(data)
         return ms_id
+
+    def list_milestones(self) -> list:
+        """Return all milestones (public accessor; the TaskBoard is the single source)."""
+        return self._load().get("milestones", [])
 
     def get_milestone(self, milestone_id: str) -> Optional[dict]:
         """Return a milestone by ID, or None."""
