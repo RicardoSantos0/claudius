@@ -25,6 +25,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "click>=8.1",
+    # Security lower bounds for transitive HTTP/name handling packages.
+    "idna>=3.15",
+    "urllib3>=2.7.0",
 ]
 
 [project.urls]
@@ -37,7 +40,9 @@ postgres = [
     "psycopg[binary]>=3.2",
 ]
 vector = [
-    "chromadb>=0.5",
+    # Avoid ChromaDB 1.x until GHSA-f4j7-r4q5-qw2c has a fixed release.
+    "chromadb>=0.5,<1.0.0",
+    "pydantic-settings>=2.14.2",
 ]
 server = [
     "mcp>=1.0",

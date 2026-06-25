@@ -70,6 +70,9 @@ This is a first public MVP (`v0.1.0`). Known limitations, deferred to later rele
   basic (checkpoints + resume).
 - **Partial protocol support.** No full A2A; MCP/agent-to-agent interop is roadmap.
 - **No PyPI release or plugin architecture yet.** Install from source.
+- **Vector search remains optional and disabled by default.** The `vector` extra
+  currently pins ChromaDB below 1.x because GHSA-f4j7-r4q5-qw2c has no fixed
+  ChromaDB 1.x release yet.
 - Autonomous `mas run` requires Anthropic credentials and is less battle-tested than
   the manual (Claude Code) workflow.
 
@@ -231,7 +234,11 @@ claude-config/
 
 A governed multi-agent delivery framework that coordinates 16 specialized AI agents through formal handoff protocols, access-controlled shared state, and policy enforcement.
 
-**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1` (optional extras: `psycopg` for Postgres, `chromadb` for vector search)
+**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `psycopg` for Postgres, `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
+
+The vector extra deliberately avoids ChromaDB 1.x until the upstream advisory
+GHSA-f4j7-r4q5-qw2c has a fixed 1.x release. Keep vector storage disabled unless
+you explicitly need it, and regenerate `uv.lock` after any dependency-policy change.
 
 ### Agent Network
 
