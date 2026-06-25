@@ -54,7 +54,7 @@ mas-server = "core.server:main"
 
 [dependency-groups]
 dev = [
-    "pytest>=8.0",
+    "pytest>=9.1.1",
     "pytest-cov>=5.0",
 ]
 
