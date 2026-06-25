@@ -89,6 +89,10 @@ class LifecycleGuard:
                 "severity": "block",
             })
 
+        trace_result = check_standard_handoff_trace(shared_state)
+        violations.extend(trace_result.violations)
+        warnings.extend(trace_result.warnings)
+
         # no-close-with-open-questions
         open_q = shared_state.get("decisions", {}).get("open_questions", [])
         if open_q:
@@ -121,6 +125,90 @@ class LifecycleGuard:
                 }],
             )
         return GuardResult(passed=True)
+
+
+# ---------------------------------------------------------------------------
+# Standard-mode trace integrity
+# ---------------------------------------------------------------------------
+
+def _project_mode(shared_state: dict) -> str:
+    workflow = shared_state.get("workflow", {}) or {}
+    core_identity = shared_state.get("core_identity", {}) or {}
+    return str(workflow.get("mode") or core_identity.get("mode") or "standard")
+
+
+def _handoff_status(handoff: dict) -> str:
+    acceptance = handoff.get("acceptance", {})
+    if isinstance(acceptance, dict) and acceptance.get("status"):
+        return str(acceptance["status"])
+    return str(handoff.get("status", ""))
+
+
+def _is_accepted_inquirer_intake_handoff(handoff: dict) -> bool:
+    if _handoff_status(handoff) != "accepted":
+        return False
+    if handoff.get("phase") != "intake":
+        return False
+    return "inquirer_agent" in {
+        str(handoff.get("from_agent", "")),
+        str(handoff.get("to_agent", "")),
+    }
+
+
+def check_standard_handoff_trace(shared_state: dict) -> GuardResult:
+    """Require a real handoff trace for standard MAS projects.
+
+    Lite mode intentionally remains flexible. Standard mode is the governed
+    multi-phase workflow, so closing or post-intake operation without any
+    handoff evidence is treated as a blocking governance gap.
+    """
+    if _project_mode(shared_state) != "standard":
+        return GuardResult(passed=True)
+
+    workflow = shared_state.get("workflow", {}) or {}
+    history = workflow.get("handoff_history", []) or []
+    violations: list[dict[str, Any]] = []
+
+    if not history:
+        violations.append({
+            "invariant": "standard-project-requires-handoffs",
+            "detail": (
+                "standard MAS projects must record governed handoffs; use "
+                "mas prompt/mas ingest or mas run instead of direct state edits"
+            ),
+            "severity": "block",
+        })
+
+    if not any(_is_accepted_inquirer_intake_handoff(h) for h in history):
+        violations.append({
+            "invariant": "standard-project-requires-inquirer-intake",
+            "detail": (
+                "standard MAS intake must include an accepted inquirer_agent "
+                "handoff before later phase completion or closure"
+            ),
+            "severity": "block",
+        })
+
+    return GuardResult(passed=not violations, violations=violations)
+
+
+def check_standard_intake_advance(phase: str, mode: str, acting_agent: str) -> GuardResult:
+    """Block standard-mode intake advancement by anyone except inquirer_agent."""
+    if mode != "standard" or phase != "intake":
+        return GuardResult(passed=True)
+    if acting_agent == "inquirer_agent":
+        return GuardResult(passed=True)
+    return GuardResult(
+        passed=False,
+        violations=[{
+            "invariant": "standard-intake-requires-inquirer",
+            "detail": (
+                f"acting_agent={acting_agent}; standard intake must be ingested "
+                "as inquirer_agent"
+            ),
+            "severity": "block",
+        }],
+    )
 
 
 # ---------------------------------------------------------------------------

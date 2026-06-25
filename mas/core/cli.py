@@ -169,12 +169,24 @@ def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
     # `mas log-tokens --completion`. Non-fatal.
     try:
         from core.db import record_manual_tokens
+        prompt_tokens = int(getattr(assembler, "last_token_count", 0) or 0)
         record_manual_tokens(
             project_id, canonical_agent_id,
-            tokens_prompt=int(getattr(assembler, "last_token_count", 0) or 0),
+            tokens_prompt=prompt_tokens,
             tokens_completion=0,
             note=f"prompt assembled for {canonical_agent_id} (manual-mode input)",
         )
+        try:
+            from core.engine.shared_state_manager import SharedStateManager
+            phase = state.get("core_identity", {}).get("current_phase", "unknown")
+            SharedStateManager(project_id).system_add_tokens(
+                canonical_agent_id,
+                phase,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=0,
+            )
+        except Exception as exc:
+            logger.debug("prompt-token state capture failed (non-blocking): %s", exc)
     except Exception as exc:  # never block prompt assembly on telemetry
         logger.debug("prompt-token capture failed (non-blocking): %s", exc)
     return prompt
@@ -517,6 +529,31 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
     else:
         add("ok", "open_handoffs", "No open handoffs")
 
+    # 4b. Standard-mode handoff trace integrity.
+    try:
+        from core.engine.lifecycle_guard import check_standard_handoff_trace
+        wf = state.get("workflow", {}) or {}
+        trace_relevant = (
+            status_val == "closed"
+            or bool(wf.get("completed_phases"))
+            or phase not in ("", "intake", "unknown")
+        )
+        if trace_relevant:
+            trace_result = check_standard_handoff_trace(state)
+            if trace_result.passed:
+                add("ok", "handoff_trace", "Standard handoff trace present")
+            else:
+                for violation in trace_result.violations:
+                    add(
+                        "fail",
+                        "handoff_trace",
+                        f"{violation.get('invariant')}: {violation.get('detail', '')}",
+                    )
+        else:
+            add("ok", "handoff_trace", "Not required before intake progression")
+    except Exception as exc:
+        add("warn", "handoff_trace", f"Cannot check handoff trace: {exc}")
+
     # 5. Snapshots after close
     if status_val == "closed":
         snapshots = list(project_dir.glob("shared_state_snapshot_*.yaml"))
@@ -586,6 +623,8 @@ def _doctor_next_action(checks: list[tuple[str, str, str]], project_id: str, sta
         return f"Run `mas init {project_id}` or check the project ID."
     if "artifact" in fails:
         return "Create missing required artifacts before advancing the phase."
+    if "handoff_trace" in fails:
+        return "Restore governed handoff evidence or reopen and rerun through `mas prompt`/`mas ingest`."
     if "consistency" in fails:
         return "Reconcile decision/task store drift (decisions on disk are missing from canonical state)."
     if "consultation" in warns:
@@ -1080,6 +1119,23 @@ def close(project_id: str):
     if _pending_handoffs_from_state(state):
         click.echo("[error] Cannot close project with pending handoffs.", err=True)
         sys.exit(1)
+
+    if current_status != "closed":
+        try:
+            from core.engine.lifecycle_guard import check_standard_handoff_trace
+            trace_result = check_standard_handoff_trace(state)
+            if trace_result.blocked:
+                for violation in trace_result.violations:
+                    click.echo(
+                        f"[error] {violation.get('invariant')}: "
+                        f"{violation.get('detail', '')}",
+                        err=True,
+                    )
+                sys.exit(1)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            click.echo(f"[warn] Pre-close trace check failed: {exc}", err=True)
 
     if current_status == "closed":
         click.echo(f"[info] Project is already closed — ensuring final artifacts and cleanup.")
@@ -2285,6 +2341,11 @@ def ingest(project_id: str, agent_id: str | None, response_file: str | None, sho
         f"  recorded handoff {res.handoff_id} "
         f"(decisions={res.decisions} artifacts={res.artifacts})"
     )
+    if res.total_tokens:
+        click.echo(
+            f"  estimated tokens: prompt={res.prompt_tokens:,} "
+            f"completion={res.completion_tokens:,} total={res.total_tokens:,}"
+        )
 
     if res.action == "advance_phase":
         click.echo(f"  phase advanced: {res.phase_before} -> {res.phase_after}")

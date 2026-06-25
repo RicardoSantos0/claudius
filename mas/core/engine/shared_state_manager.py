@@ -408,6 +408,43 @@ class SharedStateManager:
         except Exception as exc:
             logger.debug("wire-compliance counter update failed (non-blocking): %s", exc)
 
+    def system_add_tokens(
+        self,
+        agent_id: str,
+        phase: str,
+        *,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
+        """Add estimated token usage to communication counters.
+
+        Best-effort telemetry for manual mode and provider paths where exact
+        usage is unavailable. Totals are intentionally additive because a prompt
+        can be assembled separately from a later response ingestion.
+        """
+        try:
+            prompt = max(0, int(prompt_tokens or 0))
+            completion = max(0, int(completion_tokens or 0))
+            total = prompt + completion
+            if total <= 0:
+                return
+
+            state = self.load()
+            comm = state.setdefault("communication", {})
+            comm["total_tokens_used"] = int(comm.get("total_tokens_used", 0) or 0) + total
+
+            by_agent = comm.setdefault("tokens_by_agent", {})
+            by_agent[agent_id] = int(by_agent.get(agent_id, 0) or 0) + total
+
+            by_phase = comm.setdefault("tokens_by_phase", {})
+            phase_key = phase or "unknown"
+            by_phase[phase_key] = int(by_phase.get(phase_key, 0) or 0) + total
+
+            state["core_identity"]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save(state)
+        except Exception as exc:
+            logger.debug("token counter update failed (non-blocking): %s", exc)
+
     # --- APPROVAL ---
 
     def approve(self, agent_id: str, section: str, field: str) -> WriteResult:

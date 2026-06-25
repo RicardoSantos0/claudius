@@ -34,6 +34,9 @@ class IngestResult:
     closed: bool = False
     decisions: int = 0
     artifacts: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
     knowledge_request: dict | None = None
 
@@ -60,6 +63,22 @@ def apply_ingest(project_id: str, raw: str, agent_id: str | None = None) -> Inge
     mode = wf.get("mode", "standard")
     loop = OrchestrationLoop(LoopConfig(project_id=project_id))
     acting = (normalize_agent_id(agent_id) or agent_id) if agent_id else loop._determine_next_agent(state)
+    completion_tokens = 0
+    try:
+        from core.utils.token_counter import TokenCounter
+        completion_tokens = TokenCounter().count(raw)
+    except Exception:
+        completion_tokens = 0
+    if parsed.next_action == "advance_phase":
+        from core.engine.lifecycle_guard import check_standard_intake_advance
+
+        gate = check_standard_intake_advance(phase, mode, acting)
+        if gate.blocked:
+            details = "; ".join(v.get("detail", "") for v in gate.violations)
+            raise RuntimeError(
+                "standard intake phase requires inquirer_agent before advancement"
+                + (f": {details}" if details else "")
+            )
 
     # Record the agent's work as a governed handoff (master -> acting) and accept it.
     he = HandoffEngine()
@@ -74,15 +93,42 @@ def apply_ingest(project_id: str, raw: str, agent_id: str | None = None) -> Inge
             "constraints_for_next": [],
             "shared_state_fields_modified": [],
         },
+        token_usage={
+            "prompt_tokens": 0,
+            "completion_tokens": completion_tokens,
+            "total_tokens": completion_tokens,
+        },
     )
     hid = handoff.get("handoff_id", "")
     he.accept(sm=sm, handoff_id=hid)
+    try:
+        sm.system_add_tokens(
+            acting,
+            phase,
+            prompt_tokens=0,
+            completion_tokens=completion_tokens,
+        )
+    except Exception:
+        pass
+    try:
+        from core.db import record_manual_tokens
+        record_manual_tokens(
+            project_id,
+            acting,
+            tokens_prompt=0,
+            tokens_completion=completion_tokens,
+            note=f"response ingested for {acting} (manual-mode output)",
+        )
+    except Exception:
+        pass
 
     result = IngestResult(
         phase_before=phase, phase_after=phase, acting_agent=acting,
         status=parsed.status, action=parsed.next_action, handoff_id=hid,
         next_agent=parsed.next_agent, decisions=len(parsed.decisions),
-        artifacts=len(parsed.artifacts), parse_errors=list(parsed.parse_errors),
+        artifacts=len(parsed.artifacts), prompt_tokens=0,
+        completion_tokens=completion_tokens, total_tokens=completion_tokens,
+        parse_errors=list(parsed.parse_errors),
         knowledge_request=parsed.knowledge_request,
     )
 
