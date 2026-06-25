@@ -135,6 +135,55 @@ def iter_project_dirs(projects_root: Path | None = None):
                     yield sub
 
 
+def audit_project_layout(projects_root: Path | None = None) -> dict:
+    """Audit the on-disk project layout for organizational drift.
+
+    Returns a dict:
+      - ``ungrouped``: project ids sitting flat under ``projects_root`` (not in a
+        family folder).
+      - ``split_brain``: ``{project_id: [relative_locations]}`` for ids that exist
+        in more than one location (the resolver warns and prefers the one with
+        state, but these should be cleaned up).
+      - ``stubs``: relative locations of project dirs with no ``shared_state.yaml``.
+      - ``families``: ``{family_name: [project_ids]}`` for nested projects.
+
+    Read-only and layout-agnostic — surfaces drift without moving anything.
+    """
+    root = projects_root or get_projects_dir()
+    ungrouped: list[str] = []
+    families: dict[str, list[str]] = {}
+    stubs: list[str] = []
+    locations: dict[str, list[str]] = {}
+
+    if not root.is_dir():
+        return {"ungrouped": [], "split_brain": {}, "stubs": [], "families": {}}
+
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name.startswith(_PROJECT_ID_PREFIX):
+            ungrouped.append(child.name)
+            locations.setdefault(child.name, []).append(child.name)
+            if not (child / "shared_state.yaml").exists():
+                stubs.append(child.name)
+        else:
+            for sub in sorted(child.iterdir()):
+                if sub.is_dir() and sub.name.startswith(_PROJECT_ID_PREFIX):
+                    families.setdefault(child.name, []).append(sub.name)
+                    rel = f"{child.name}/{sub.name}"
+                    locations.setdefault(sub.name, []).append(rel)
+                    if not (sub / "shared_state.yaml").exists():
+                        stubs.append(rel)
+
+    split_brain = {pid: locs for pid, locs in locations.items() if len(locs) > 1}
+    return {
+        "ungrouped": ungrouped,
+        "split_brain": split_brain,
+        "stubs": stubs,
+        "families": families,
+    }
+
+
 def get_governance_mode() -> str:
     config = load_config()
     return os.getenv("MAS_GOVERNANCE_MODE", config["system"]["governance_mode"])

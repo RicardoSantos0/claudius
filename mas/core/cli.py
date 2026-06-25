@@ -672,6 +672,25 @@ def doctor(project_id: str | None):
     _ds = len(list(skills_dir.glob("*/SKILL.md"))) if skills_dir.is_dir() else 0
     add("ok", "inventory", f"{_da} agent docs, {_ds} skill packages on disk")
 
+    # Project-folder layout audit (non-fatal): surface ungrouped, split-brain,
+    # and stub project dirs so they can be cleaned up deliberately.
+    try:
+        from core.utils.config import audit_project_layout
+        layout = audit_project_layout(Path(projects_dir))
+        nfam = len(layout["families"])
+        add("ok", "project_layout",
+            f"{nfam} family folder(s); {len(layout['ungrouped'])} ungrouped project(s)")
+        if layout["split_brain"]:
+            add("warn", "project_split_brain",
+                f"{len(layout['split_brain'])} project id(s) in multiple locations: "
+                f"{layout['split_brain']}")
+        if layout["stubs"]:
+            add("warn", "project_stubs",
+                f"{len(layout['stubs'])} project dir(s) with no shared_state.yaml: "
+                f"{layout['stubs']}")
+    except Exception as exc:
+        add("warn", "project_layout", f"layout audit failed: {exc}")
+
     # Runtime mode: source-tree clone, or installed wheel backed by a workspace.
     from core.paths import is_installed, is_workspace_initialized, workspace_root
     if not is_installed():
