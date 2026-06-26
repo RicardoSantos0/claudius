@@ -606,6 +606,8 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
                 sev = "fail" if f.get("severity") == "high" else "warn"
                 if f.get("check") == "decisions":
                     add(sev, "consistency", f"{f['direction']} decisions {f.get('ids')}: {f['detail']}")
+                elif f.get("check") == "manual_loop_discipline":
+                    add(sev, "consistency", f"phases without handoffs {f.get('phases')}: {f['detail']}")
                 else:
                     add(sev, "consistency",
                         f"task store drift state_only={f.get('state_only')} board_only={f.get('board_only')}")

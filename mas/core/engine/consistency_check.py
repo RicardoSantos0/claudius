@@ -114,6 +114,41 @@ def check_task_store_consistency(state_execution, task_board_data) -> list[dict]
     }]
 
 
+# "closed" is an administrative terminal action (mas close), not a delegated work
+# phase, so it never carries a handoff — excluded to avoid a guaranteed false
+# positive on every closed project.
+_NON_HANDOFF_PHASES = {"closed"}
+
+
+def check_completed_phase_handoffs(workflow: dict) -> list[dict]:
+    """G4 manual-loop soft gate: warn when a completed work phase has no handoff.
+
+    Standard-mode MAS projects should record a governed handoff for each phase
+    they complete (manual-loop discipline — all surfaces). A completed phase with
+    zero matching handoffs in handoff_history is surfaced as a low-severity
+    finding (warn only, never blocks). Lite mode is intentionally exempt.
+    """
+    if str(workflow.get("mode") or "standard") != "standard":
+        return []
+    phases_with_handoffs = {
+        h.get("phase") for h in (workflow.get("handoff_history") or [])
+        if isinstance(h, dict)
+    }
+    missing = [
+        p for p in dict.fromkeys(workflow.get("completed_phases") or [])
+        if p and p not in _NON_HANDOFF_PHASES and p not in phases_with_handoffs
+    ]
+    if not missing:
+        return []
+    return [{
+        "check": "manual_loop_discipline",
+        "severity": "low",
+        "phases": missing,
+        "detail": "completed phase(s) have no recorded handoff; materialize phase "
+                  "transitions with mas_handoff_create (manual-loop discipline)",
+    }]
+
+
 def check_project(project_id: str, projects_root: Path | None = None) -> ConsistencyReport:
     """Load all sources for a project and run every consistency check."""
     from core.utils.config import resolve_project_dir
@@ -128,5 +163,7 @@ def check_project(project_id: str, projects_root: Path | None = None) -> Consist
     from core.engine.task_board import TaskBoard
     board = {"tasks": TaskBoard(project_id, projects_root=projects_root).list_tasks()}
     findings += check_task_store_consistency(state.get("execution") or {}, board)
+
+    findings += check_completed_phase_handoffs(state.get("workflow") or {})
 
     return ConsistencyReport(project_id, findings)

@@ -883,7 +883,8 @@ def mas_consistency_check(project_id: str) -> str:
     """Check decision/task store consistency for a project (G3). Returns YAML: ok, findings.
 
     Flags decisions present on disk but missing from canonical state (high; data-loss
-    risk) and divergence between shared_state.execution tasks and the TaskBoard."""
+    risk), divergence between shared_state.execution tasks and the TaskBoard, and
+    (G4 soft gate) standard-mode completed phases with no recorded handoff (low; warn)."""
     import yaml
     from core.engine.consistency_check import check_project
     report = check_project(project_id)
