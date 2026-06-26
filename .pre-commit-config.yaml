@@ -10,7 +10,7 @@ repos:
       - id: validate-agents
         name: Validate MAS agent frontmatter and registry coverage
         # Use uv to ensure PyYAML and other deps resolve from the project venv.
-        entry: uv run python scripts/validate_agents.py
+        entry: uv run --no-sync python scripts/validate_agents.py
         language: system
         pass_filenames: false
         # Run when any agent definition, the registry, or the validator itself changes.
@@ -20,7 +20,7 @@ repos:
       - id: validate-skills
         name: Validate MAS skill frontmatter and registry coverage
         # Use uv to ensure PyYAML and other deps resolve from the project venv.
-        entry: uv run python scripts/validate_skills.py
+        entry: uv run --no-sync python scripts/validate_skills.py
         language: system
         pass_filenames: false
         # Run when any skill definition, the registry, or the validator itself changes.
@@ -30,8 +30,18 @@ repos:
       - id: check-archive-clean
         name: Verify a git archive contains no private/generated paths
         # Build a tar of HEAD and assert it carries no blocked/private files.
-        entry: bash -c 'ARCHIVE="${TMPDIR:-/tmp}/precommit_archive.tar"; git archive HEAD --format=tar -o "$ARCHIVE" && uv run python scripts/check_archive_clean.py "$ARCHIVE"'
+        entry: bash -c 'ARCHIVE="${TMPDIR:-/tmp}/precommit_archive.tar"; git archive HEAD --format=tar -o "$ARCHIVE" && uv run --no-sync python scripts/check_archive_clean.py "$ARCHIVE"'
         language: system
         pass_filenames: false
         always_run: true
         # Always exits 0 on success, 1 if blocked paths present, 2 on usage error.
+
+      - id: mas-discipline-commit-msg
+        name: Require MAS evidence in commit messages
+        entry: uv run --no-sync python scripts/check_mas_discipline.py --message-file
+        language: system
+        stages: [commit-msg]
+        pass_filenames: true
+        # Commit messages must include `MAS: proj-...`; local hooks also verify
+        # the referenced project has handoff trace, token accounting, and closure
+        # artifacts. Use `MAS-BYPASS: <rationale>` only for explicit emergencies.

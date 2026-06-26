@@ -151,6 +151,16 @@ pytest mas/tests/                   # Run test suite
 
 `uv run mas ...` also works from repo root but is slower.
 
+### Commit Discipline
+
+Install the local hooks with `pre-commit install --hook-type pre-commit --hook-type commit-msg`.
+Commit messages for tracked work must include `MAS: proj-YYYYMMDD-NNN-slug`.
+The commit-msg hook verifies that the referenced local MAS project has governed
+handoff trace, token accounting, and closed-project final artifacts. Use
+`MAS-BYPASS: <rationale>` only when the user explicitly authorizes an emergency
+out-of-band commit; CI still checks that direct pushes carry a MAS marker or an
+explicit bypass record.
+
 ---
 
 ## Directory Structure
