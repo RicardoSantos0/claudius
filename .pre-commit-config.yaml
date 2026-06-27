@@ -13,6 +13,7 @@ repos:
         entry: uv run --no-sync python scripts/validate_agents.py
         language: system
         pass_filenames: false
+        stages: [pre-commit]
         # Run when any agent definition, the registry, or the validator itself changes.
         files: ^(agents/.*\.md|mas/roster/registry_canonical\.yaml|scripts/validate_agents\.py)$
         # Always exits 0 on success, 1 on validation failure, 2 on usage error.
@@ -23,6 +24,7 @@ repos:
         entry: uv run --no-sync python scripts/validate_skills.py
         language: system
         pass_filenames: false
+        stages: [pre-commit]
         # Run when any skill definition, the registry, or the validator itself changes.
         files: ^(skills/.*/SKILL\.md|mas/roster/registry_index\.yaml|mas/roster/registry_canonical\.yaml|scripts/validate_skills\.py)$
         # Always exits 0 on success, 1 on validation failure, 2 on usage error.
@@ -33,6 +35,7 @@ repos:
         entry: bash -c 'ARCHIVE="${TMPDIR:-/tmp}/precommit_archive.tar"; git archive HEAD --format=tar -o "$ARCHIVE" && uv run --no-sync python scripts/check_archive_clean.py "$ARCHIVE"'
         language: system
         pass_filenames: false
+        stages: [pre-commit]
         always_run: true
         # Always exits 0 on success, 1 if blocked paths present, 2 on usage error.
 

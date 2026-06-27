@@ -1,7 +1,7 @@
 # Release Checklist
 
-Run these before publishing or sharing the repo. The first three checks mirror what
-CI enforces on every push/PR to `master`.
+Run these before publishing or sharing the repo. The first four checks mirror what
+CI enforces on every push/PR to `main`.
 
 Activate the venv first (see [operation-modes.md](operation-modes.md)).
 
@@ -42,7 +42,20 @@ python scripts/check_archive_clean.py claude-config-source.zip
 path — `.env`, `.venv/`, `mas/data/`, `mas/projects/`, `__pycache__/`, `*.sqlite`,
 notebooklm browser state, etc. CI runs the equivalent check on a `git archive` of HEAD.
 
-## 4. Runtime diagnostics
+## 4. MAS discipline marker
+
+Every tracked change should be tied to a governed MAS project:
+
+```bash
+python scripts/check_mas_discipline.py --message-file .git/COMMIT_EDITMSG
+```
+
+Local strict mode verifies the referenced `MAS: proj-...` project has handoff
+history, accepted intake, token accounting, and close artifacts. CI uses marker-only
+mode because `mas/projects/` is gitignored; direct pushes still need either a
+`MAS:` marker or a user-authorized `MAS-BYPASS:` rationale.
+
+## 5. Runtime diagnostics
 
 ```bash
 mas doctor
@@ -50,7 +63,7 @@ mas doctor
 
 Confirms the runtime environment (DB, templates, API key presence, etc.) is healthy.
 
-## 5. Setup smoke check
+## 6. Setup smoke check
 
 On a fresh machine, confirm the symlink setup still works:
 
@@ -63,10 +76,11 @@ On a fresh machine, confirm the symlink setup still works:
 
 Verify `agents/`, `commands/`, and `skills/` resolve under `~/.claude/`.
 
-## 6. Docs current
+## 7. Docs current
 
 Confirm the docs under `docs/` and the top-level `README.md` still match reality:
-command names, agent count (20), skill count (13), and the coverage gate (70%).
+command names, agent count (16), skill count (11), the coverage gate (70%), and
+the current MAS discipline behavior.
 
 ## Pre-release summary
 
@@ -76,6 +90,7 @@ command names, agent count (20), skill count (13), and the coverage gate (70%).
 | Skills | `python scripts/validate_skills.py` | exit 0 |
 | Tests + coverage | `pytest mas/tests/` | green, coverage ≥ 70% |
 | Archive | `python scripts/check_archive_clean.py <archive>` | exit 0 |
+| MAS discipline | `python scripts/check_mas_discipline.py --message-file .git/COMMIT_EDITMSG` | local project evidence present, or authorized bypass |
 | Diagnostics | `mas doctor` | healthy |
 | Setup | `setup.ps1` / `setup.sh` | symlinks resolve |
 | Docs | manual review | current |

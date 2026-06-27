@@ -572,6 +572,7 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 
 - [docs/architecture.md](docs/architecture.md) — component & lifecycle map
 - [docs/operation-modes.md](docs/operation-modes.md) — Claude Code config mode vs source-tree MAS mode
+- [docs/governance/behavioral-discipline.md](docs/governance/behavioral-discipline.md) — MAS commit evidence for Claude Code, Codex, OpenCode, Copilot, and manual/package surfaces
 - [docs/authoring-agents.md](docs/authoring-agents.md) — add/update an agent without breaking registry invariants
 - [docs/authoring-skills.md](docs/authoring-skills.md) — add/register/validate a skill
 - [docs/release-checklist.md](docs/release-checklist.md) — pre-release validators, tests, smoke checks

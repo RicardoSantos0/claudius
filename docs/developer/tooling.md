@@ -32,6 +32,26 @@ Wired as a pre-commit hook (`.pre-commit-config.yaml` → `validate-agents`). Ru
 
 Reference: ip-001 / proj-YYYYMMDD-NNN.
 
+## `scripts/check_mas_discipline.py`
+
+Validates commit messages for MAS evidence.
+
+```bash
+uv run python scripts/check_mas_discipline.py --message-file .git/COMMIT_EDITMSG
+uv run python scripts/check_mas_discipline.py --message-file .git/COMMIT_EDITMSG --skip-project-state
+```
+
+Local strict mode requires a `MAS: proj-YYYYMMDD-NNN-slug` marker and verifies the
+local project has governed handoff history, accepted intake, token accounting, and
+closed-project artifacts. `--skip-project-state` is for CI and public mirrors where
+gitignored `mas/projects/` state is unavailable; it still rejects commits without a
+MAS marker or explicit `MAS-BYPASS:` rationale.
+
+Wired as a `commit-msg` hook (`.pre-commit-config.yaml` ->
+`mas-discipline-commit-msg`) and as a push-time CI marker check.
+
+Reference: proj-20260626-001-codex-behavioral-discipline-enforcement.
+
 ## `mas/tools/roster_sync.py`
 
 Syncs `registry_canonical.yaml` into the `mas_agents` table in `mas/data/episodic.db`. Run after any edit to the canonical registry.

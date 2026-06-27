@@ -87,14 +87,22 @@ mas db migrate-postgres      # copy local SQLite tables into configured PostgreS
 mas db migrate-graph         # one-time legacy graph import
 ```
 
-### Two MAS execution sub-modes
+## Mode 3 — MCP / provider-neutral manual surfaces
 
-Within Mode 2 there are two ways to drive a project:
+The package exposes `mas-server`, an MCP stdio server. MCP-capable clients can use
+the same governed tools (`mas_prompt`, `mas_ingest`, `mas_roster`, `mas_status`,
+and related `mas_*` tools) instead of inventing a separate workflow. Clients that
+do not support MCP can still use the paste loop with `mas prompt` and `mas ingest`.
+
+### Three MAS execution sub-modes
+
+Across source-tree, package, and MCP usage there are three ways to drive a project:
 
 | Sub-mode | How | When |
 |----------|-----|------|
-| **Claude Code manual orchestration** (primary) | `mas prompt <project-id> [agent]` assembles the next agent prompt; run the agent manually in Claude Code | No API credits needed |
-| **`mas run` CLI** | `mas run <project-id>` drives the live loop autonomously | Requires `ANTHROPIC_API_KEY` with credits |
+| **Manual orchestration** (primary) | `mas prompt <project-id> [agent]` assembles the next agent prompt; run it in Claude Code, Codex, ChatGPT, Gemini, GitHub Copilot chat, OpenCode, LM Studio, Ollama, or another LLM surface; feed replies through `mas ingest` | No provider keys needed |
+| **MCP tool orchestration** | Client calls `mas_prompt`, `mas_ingest`, `mas_roster`, and related tools through `mas-server` | Claude Code, Codex, OpenCode, and other MCP-capable clients |
+| **`mas run` CLI** | `mas run <project-id>` drives the live loop autonomously through `MAS_PROVIDER` | API-backed or local OpenAI-compatible providers |
 
 For the manual flow, get the assembled prompt for the next agent:
 
@@ -102,6 +110,18 @@ For the manual flow, get the assembled prompt for the next agent:
 mas prompt <project-id>                # next agent auto-detected
 mas prompt <project-id> inquirer_agent # specific agent
 ```
+
+Manual mode records token cost as telemetry even though MAS is not calling the
+model API directly. `mas prompt` estimates input tokens from the assembled prompt,
+`mas ingest` estimates completion tokens from the pasted response, and
+`mas log-tokens` remains available for exact provider/surface counts or manual
+corrections.
+
+For behaviorally disciplined work, each surface should let MAS choose the next
+agent instead of manually skipping phases: start with `mas prompt <project-id>`,
+ingest each response, close the project, then commit with `MAS: <project-id>`.
+Local commit hooks enforce the project evidence; CI enforces the marker or explicit
+bypass record.
 
 ## Testing (Mode 2)
 
