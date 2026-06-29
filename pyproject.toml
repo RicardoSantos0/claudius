@@ -45,7 +45,7 @@ vector = [
     "pydantic-settings>=2.14.2",
 ]
 server = [
-    "mcp>=1.0",
+    "mcp>=1.28.1",
 ]
 
 [project.scripts]
