@@ -21,7 +21,7 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "anthropic>=0.49.0",
+    "anthropic>=0.112.0",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "click>=8.1",
