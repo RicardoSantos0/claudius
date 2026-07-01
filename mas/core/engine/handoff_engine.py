@@ -457,6 +457,29 @@ class HandoffEngine:
             except Exception as exc:
                 logger.debug("decision_log auto-population failed (non-blocking): %s", exc)
 
+            # IP-3: auto-capture token accounting from the accepted handoff's
+            # token_usage into communication counters (non-fatal). This is what
+            # makes communication.total_tokens_used reflect real usage instead of
+            # staying at 0 — it accumulates whatever usage the handoff carried.
+            try:
+                state = sm.load()
+                history = state.get("workflow", {}).get("handoff_history", [])
+                ho = next((h for h in history
+                           if (h.get("handoff_id") or h.get("id")) == handoff_id), None)
+                if ho:
+                    tu = ho.get("token_usage") or {}
+                    sm.system_add_tokens(
+                        agent_id=str(ho.get("from_agent") or "unknown"),
+                        phase=str(ho.get("phase")
+                                  or state.get("core_identity", {}).get("current_phase")
+                                  or "unknown"),
+                        prompt_tokens=int(tu.get("prompt_tokens", 0) or 0),
+                        completion_tokens=int(tu.get("completion_tokens", 0) or 0),
+                        total_tokens=int(tu.get("total_tokens", 0) or 0),
+                    )
+            except Exception as exc:
+                logger.debug("token auto-capture on accept failed (non-blocking): %s", exc)
+
         return ok
 
     def reject(self, sm: SharedStateManager, handoff_id: str,

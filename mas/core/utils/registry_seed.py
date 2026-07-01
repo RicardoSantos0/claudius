@@ -249,7 +249,26 @@ def _seed_templates(conn: sqlite3.Connection, root: Path) -> int:
     return count
 
 
-def _seed_domains(conn: sqlite3.Connection) -> int:
+def _description_from_domain_file(path: Path) -> str:
+    """Return the first meaningful paragraph from a domain Markdown file."""
+    text = path.read_text(encoding="utf-8")
+    lines: list[str] = []
+    in_heading = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line == "---":
+            if lines:
+                break
+            continue
+        if line.startswith("#"):
+            in_heading = True
+            continue
+        if in_heading or lines:
+            lines.append(line)
+    return " ".join(lines).strip()
+
+
+def _seed_domains(conn: sqlite3.Connection, root: Path) -> int:
     count = 0
     for domain in _DOMAINS:
         conn.execute(
@@ -265,6 +284,30 @@ def _seed_domains(conn: sqlite3.Connection) -> int:
             ),
         )
         count += 1
+    domains_dir = root / "mas" / "domains"
+    if not domains_dir.exists():
+        return count
+    for md_file in sorted(domains_dir.glob("*.md")):
+        stem = md_file.stem
+        try:
+            description = _description_from_domain_file(md_file)
+            rel_path = md_file.relative_to(root).as_posix()
+            name = stem.replace("_", " ").title()
+            conn.execute(
+                """INSERT OR REPLACE INTO mas_domains
+                   (domain_id, name, description, related_agents, metadata)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (
+                    stem,
+                    name,
+                    description,
+                    json.dumps(["domain_expert"]),
+                    json.dumps({"domain_path": rel_path, "source": "mas/domains"}),
+                ),
+            )
+            count += 1
+        except Exception as exc:
+            warnings.warn(f"registry_seed: skipping domain {md_file.name}: {exc}")
     return count
 
 
@@ -438,7 +481,7 @@ def seed(db_path: Path = DB_PATH, root: Path = ROOT) -> dict:
         skills_count = _seed_skills(conn, root)
         commands_count = _seed_commands(conn, root)
         templates_count = _seed_templates(conn, root)
-        domains_count = _seed_domains(conn)
+        domains_count = _seed_domains(conn, root)
         codebase_count = _seed_codebase(conn, root)
         codebase_count += _seed_project_codebases(conn, root)
         pruned = _prune_codebase(conn, root)  # drop phantom paths (registry drift)

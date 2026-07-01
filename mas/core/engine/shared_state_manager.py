@@ -415,17 +415,25 @@ class SharedStateManager:
         *,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        total_tokens: int = 0,
     ) -> None:
         """Add estimated token usage to communication counters.
 
         Best-effort telemetry for manual mode and provider paths where exact
         usage is unavailable. Totals are intentionally additive because a prompt
         can be assembled separately from a later response ingestion.
+
+        ``total_tokens`` (IP-3) lets callers record a usage report that only
+        carries a total (e.g. a subagent's reported ``subagent_tokens``) without
+        a prompt/completion split: it is used as the total when prompt+completion
+        sum to zero.
         """
         try:
             prompt = max(0, int(prompt_tokens or 0))
             completion = max(0, int(completion_tokens or 0))
             total = prompt + completion
+            if total <= 0:
+                total = max(0, int(total_tokens or 0))
             if total <= 0:
                 return
 
