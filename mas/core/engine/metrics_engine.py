@@ -566,11 +566,15 @@ class MetricsEngine:
         """For a given agent: completed / assigned * 100."""
         assigned = [t for t in all_tasks if t.get("assigned_to") == agent_id]
         if not assigned:
+            # prop-013-004: a vacuous 100 here inflated exemplary flags for every
+            # agent on boards that track work via handoffs (assigned_to: null).
             return MetricResult(
                 metric="task_completion_rate",
-                score=100.0,
+                score=-1.0,
                 evidence=f"No tasks assigned to {agent_id}",
-                findings="Agent was not assigned any tasks in this project",
+                findings="Agent was not assigned any tasks in this project — "
+                         "metric excluded from the average (score via handoff evidence instead).",
+                mode="not_applicable",
             )
 
         completed = [t for t in assigned if t.get("status") == "completed"]
@@ -653,9 +657,10 @@ class MetricsEngine:
         if not handoff_history or phase_count == 0:
             return MetricResult(
                 metric="token_efficiency",
-                score=0.0,
+                score=-1.0,
                 evidence="No handoff history or phases",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
         tokens_by_agent: dict[str, int] = {}
@@ -677,6 +682,17 @@ class MetricsEngine:
             tokens_by_agent[agent] = tokens_by_agent.get(agent, 0) + t
             tokens_by_phase[phase] = tokens_by_phase.get(phase, 0) + t
             total += t
+
+        if total == 0:
+            # prop-013-003: zero recorded tokens is a data-collection gap, not a
+            # perfect score — manual-mode projects often carry no token accounting.
+            return MetricResult(
+                metric="token_efficiency",
+                score=-1.0,
+                evidence=f"total=0, phases={phase_count}",
+                findings="No token data recorded — metric excluded from the average.",
+                mode="not_applicable",
+            )
 
         avg_per_phase = total / phase_count
         score = max(0.0, min(100.0, 100.0 - (avg_per_phase - 500) / 45.0))
@@ -703,36 +719,50 @@ class MetricsEngine:
         self,
         handoff_history: list,
     ) -> MetricResult:
-        """Ratio of structured fields to prose in payloads."""
+        """Wire-protocol compliance across all handoff payloads.
+
+        prop-013-005: the canonical definition is output_linter.check_wire_compliance
+        (presence of ``_v`` and ``s``) over every payload in the handoff history —
+        the summary-length heuristic previously used here disagreed with the
+        evaluator's manual count (3% vs 81.8% on the same project).
+        """
         if not handoff_history:
             return MetricResult(
                 metric="payload_density",
-                score=0.0,
+                score=-1.0,
                 evidence="No handoff history",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
-        structured = 0
-        prose = 0
+        from core.engine.output_linter import check_wire_compliance
 
+        compliant = 0
+        partial = 0
+        total = 0
+        acc = 0.0
         for h in handoff_history:
             payload = h.get("payload") or h.get("p") or {}
-            summary = payload.get("summary") or payload.get("s", "")
-            if isinstance(summary, str) and (len(summary) < 30 and " " not in summary.strip()):
-                structured += 1
-            else:
-                prose += 1
+            if not isinstance(payload, dict):
+                payload = {}
+            unit, _ = check_wire_compliance(payload)
+            acc += unit
+            total += 1
+            if unit >= 1.0:
+                compliant += 1
+            elif unit > 0.0:
+                partial += 1
 
-        total = structured + prose
-        rate = structured / total if total > 0 else 0.0
+        rate = acc / total if total > 0 else 0.0
         score = rate * 100.0
 
         return MetricResult(
             metric="payload_density",
             score=round(score, 1),
-            evidence=f"structured={structured}, prose={prose}, total={total}",
+            evidence=f"compliant={compliant}, partial={partial}, total={total}",
             findings=(
-                f"{rate:.0%} wire format compliance ({structured}/{total} payloads). "
+                f"{rate:.0%} wire format compliance ({compliant}/{total} fully compliant payloads; "
+                f"canonical measure: output_linter _v/s check). "
                 + ("Target: >90%." if rate < 0.9 else "Target met.")
             ),
         )
@@ -746,9 +776,10 @@ class MetricsEngine:
         if total_prompt_tokens == 0 or not prompt_token_counts:
             return MetricResult(
                 metric="context_injection_efficiency",
-                score=0.0,
+                score=-1.0,
                 evidence="No prompt token data",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
         context_tokens = sum(prompt_token_counts)
