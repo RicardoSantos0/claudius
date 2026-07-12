@@ -1231,6 +1231,11 @@ class MetricsEngine:
 
         comms = self.compute_communication_efficiency(shared_state)
 
+        actionable_metrics = [
+            m for m in project_metrics
+            if m.mode != "not_applicable" and m.score < 70.0
+        ]
+
         return EvaluationReport(
             report_id=report_id,
             project_id=project_id,
@@ -1246,10 +1251,10 @@ class MetricsEngine:
                 "total_violations": total_violations,
             },
             recommendations={
-                "improvement_areas": [m.metric for m in project_metrics if m.score < 70.0],
+                "improvement_areas": [m.metric for m in actionable_metrics],
                 "priority_ranking": sorted(
-                    [m.metric for m in project_metrics if m.score < 70.0],
-                    key=lambda x: next(m.score for m in project_metrics if m.metric == x),
+                    [m.metric for m in actionable_metrics],
+                    key=lambda x: next(m.score for m in actionable_metrics if m.metric == x),
                 ),
                 "suggested_actions": (
                     [f"Flag {a} for probation review" for a in probation_agents]

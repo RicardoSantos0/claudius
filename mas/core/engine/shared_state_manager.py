@@ -52,6 +52,45 @@ class WriteResult:
         return self.success
 
 
+def _acceptance_label(entry: Any) -> str | None:
+    """Identity key for an acceptance criterion: its explicit id/criterion_id, or —
+    when it carries neither — the tag before the first ':' of its criterion text
+    (e.g. 'AC2b' from 'AC2b: ...'). Lets mark_acceptance_met find label-keyed criteria
+    and lets append() reject duplicate-label re-adds (proj-YYYYMMDD-NNN pf-002)."""
+    if not isinstance(entry, dict):
+        return None
+    for key in ("id", "criterion_id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    criterion = entry.get("criterion")
+    if isinstance(criterion, str) and criterion.strip():
+        return criterion.split(":", 1)[0].strip()
+    return None
+
+
+def _acceptance_matches(entry: Any, key: str) -> bool:
+    """True if `key` identifies this criterion by id, criterion_id, criterion label,
+    or full criterion text — so mark_acceptance_met works whether the caller passes
+    'ac-001' or 'AC1'."""
+    if not isinstance(entry, dict):
+        return False
+    if key in (entry.get("id"), entry.get("criterion_id")):
+        return True
+    criterion = entry.get("criterion")
+    if isinstance(criterion, str) and criterion.strip():
+        return key == criterion.strip() or key == criterion.split(":", 1)[0].strip()
+    return False
+
+
+# field_path -> function returning an item's identity key. append() rejects an item
+# whose key already exists in the list, so a keyed record (an acceptance criterion) is
+# updated in place rather than silently duplicated.
+_KEYED_APPEND_GUARDS: dict[str, Any] = {
+    "project_definition.acceptance_criteria": _acceptance_label,
+}
+
+
 # --- INITIAL STATE FACTORY ---
 
 LITE_PHASES = ("intake", "execution", "closed")
@@ -378,6 +417,24 @@ class SharedStateManager:
         if not isinstance(current, list):
             return WriteResult(False, "field_is_not_a_list")
 
+        # Keyed-append guard: reject re-adding a record that already exists by key
+        # (e.g. an acceptance criterion) so it is updated in place, not duplicated.
+        # A silent duplicate here skewed the acceptance_criteria_pass_rate metric to a
+        # false 7/13 (proj-YYYYMMDD-NNN pf-002).
+        key_fn = _KEYED_APPEND_GUARDS.get(field_path)
+        if key_fn is not None:
+            new_key = key_fn(item)
+            if new_key is not None and new_key in {
+                k for k in (key_fn(existing) for existing in current) if k is not None
+            }:
+                reason = (
+                    f"duplicate_keyed_append:{field_path}[{new_key}] — an entry with this "
+                    f"key already exists; update it in place (mark_acceptance_met / write) "
+                    f"instead of appending a duplicate"
+                )
+                self.logger.log_violation(agent_id, field_path, self.project_id, reason)
+                return WriteResult(False, reason)
+
         current.append(item)
         state[section][field] = current
         state["core_identity"]["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -499,7 +556,7 @@ class SharedStateManager:
 
         matched = None
         for c in criteria:
-            if isinstance(c, dict) and criterion_id in (c.get("id"), c.get("criterion_id")):
+            if _acceptance_matches(c, criterion_id):
                 c["met"] = met
                 if evidence is not None:
                     c["evidence"] = evidence

@@ -102,15 +102,6 @@ def apply_ingest(project_id: str, raw: str, agent_id: str | None = None) -> Inge
     hid = handoff.get("handoff_id", "")
     he.accept(sm=sm, handoff_id=hid)
     try:
-        sm.system_add_tokens(
-            acting,
-            phase,
-            prompt_tokens=0,
-            completion_tokens=completion_tokens,
-        )
-    except Exception:
-        pass
-    try:
         from core.db import record_manual_tokens
         record_manual_tokens(
             project_id,

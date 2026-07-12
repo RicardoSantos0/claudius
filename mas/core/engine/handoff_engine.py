@@ -468,8 +468,11 @@ class HandoffEngine:
                            if (h.get("handoff_id") or h.get("id")) == handoff_id), None)
                 if ho:
                     tu = ho.get("token_usage") or {}
+                    agent_for_tokens = str(ho.get("from_agent") or "unknown")
+                    if "manual ingest" in str(ho.get("task_description") or ""):
+                        agent_for_tokens = str(ho.get("to_agent") or agent_for_tokens)
                     sm.system_add_tokens(
-                        agent_id=str(ho.get("from_agent") or "unknown"),
+                        agent_id=agent_for_tokens,
                         phase=str(ho.get("phase")
                                   or state.get("core_identity", {}).get("current_phase")
                                   or "unknown"),
