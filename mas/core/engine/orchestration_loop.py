@@ -49,6 +49,10 @@ class LoopConfig:
     auto: bool = False                # skip human checkpoints
     target_phase: str | None = None   # stop after this phase completes
     max_agent_retries: int = 2        # per-agent consecutive error limit
+    execution_profile: str | None = None  # explicit semantic route override
+    model_override: str | None = None     # explicit provider model override
+    provider_override: str | None = None  # explicit provider override
+    provider_catalog: str | None = None   # explicit configured provider catalog
 
 
 class StopReason(str, Enum):
@@ -276,8 +280,8 @@ class OrchestrationLoop:
 
     def _dispatch_agent(self, agent_id: str, state: dict) -> "_AgentResponse":
         from core.engine.agent_runner import AgentRunner
+        from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import PromptAssembler
-        from core.utils.config import get_model_for_agent
 
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
 
@@ -299,8 +303,30 @@ class OrchestrationLoop:
         prompt = self._assembler.assemble(canonical_agent_id, state,
                                           extra_context=extra_ctx)
 
-        model = get_model_for_agent(canonical_agent_id)
-        runner = AgentRunner(model=model)
+        route_override = self._pending_route_override(canonical_agent_id, state)
+        router = ExecutionProfileRouter()
+        selection = router.resolve(
+            canonical_agent_id,
+            phase,
+            explicit_profile=(self.config.execution_profile
+                              or route_override.get("profile")),
+            explicit_model=(self.config.model_override
+                            or route_override.get("model")),
+            explicit_provider=(self.config.provider_override
+                               or route_override.get("provider")),
+            risk_level=self._project_risk_level(state),
+            retry_count=self._agent_error_counts.get(canonical_agent_id, 0),
+            provider_catalog=(self.config.provider_catalog
+                              or route_override.get("catalog")),
+        )
+        route_action_id = router.record_route_selection(self.config.project_id, selection)
+        route_selection = selection.to_dict()
+        route_selection["route_action_id"] = route_action_id
+        runner = AgentRunner(
+            model=selection.model,
+            provider=selection.provider,
+            route_selection=route_selection,
+        )
 
         from core.utils.config import load_config
         max_tokens = load_config().get("llm", {}).get("max_tokens", 4096)
@@ -331,6 +357,52 @@ class OrchestrationLoop:
             self._agent_error_counts.pop(canonical_agent_id, None)
 
         return _AgentResponse(agent_id=canonical_agent_id, raw_text=text, tokens_used=tokens)
+
+    @staticmethod
+    def _project_risk_level(state: dict) -> str | None:
+        value = state.get("project_definition", {}).get("risk_classification")
+        return str(value) if value not in (None, "") else None
+
+    def _pending_route_override(self, agent_id: str, state: dict) -> dict[str, str]:
+        """Read an optional explicit routing request from the pending handoff."""
+        history = state.get("workflow", {}).get("handoff_history", [])
+        for handoff in reversed(history):
+            try:
+                from core.engine.handoff_engine import HandoffEngine
+                expanded = HandoffEngine.expand(handoff)
+            except Exception:
+                expanded = handoff
+            target = normalize_agent_id(expanded.get("to_agent")) or expanded.get("to_agent")
+            acceptance = expanded.get("acceptance", {})
+            acceptance_status = (
+                acceptance.get("status")
+                if isinstance(acceptance, dict)
+                else expanded.get("acc")
+            )
+            if target != agent_id or acceptance_status not in {"pending", "accepted"}:
+                continue
+            payload = expanded.get("payload", {}) or {}
+            routing = payload.get("routing", {}) if isinstance(payload, dict) else {}
+            hr_params = (
+                payload.get("hr_suggested_params", {})
+                if isinstance(payload, dict)
+                else {}
+            )
+            result = {
+                "profile": str(
+                    routing.get("execution_profile")
+                    or routing.get("profile")
+                    or hr_params.get("model_profile")
+                    or ""
+                ),
+                "model": str(routing.get("model_override") or routing.get("model") or ""),
+                "provider": str(routing.get("provider_override") or routing.get("provider") or ""),
+            }
+            catalog = routing.get("provider_catalog") or routing.get("catalog")
+            if catalog:
+                result["catalog"] = str(catalog)
+            return result
+        return {}
 
     def _handle_skill_request(
         self,
@@ -753,9 +825,9 @@ class OrchestrationLoop:
         """Run full consultation round. Returns ConsultationSynthesis or None."""
         from core.engine.consultation_engine import ConsultationEngine
         from core.engine.agent_runner import AgentRunner
+        from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import PromptAssembler
         from core.engine.shared_state_manager import SharedStateManager
-        from core.utils.config import get_model_for_agent
 
         sm = SharedStateManager(self.config.project_id)
         engine = ConsultationEngine()
@@ -811,8 +883,29 @@ class OrchestrationLoop:
             if consultant_id == "domain_expert":
                 extra["injected_domain_context"] = request.domain_context
             prompt = assembler.assemble(consultant_id, state, extra_context=extra)
-            model = get_model_for_agent(consultant_id)
-            runner = AgentRunner(model=model)
+            router = ExecutionProfileRouter()
+            selection = router.resolve(
+                consultant_id,
+                state.get("core_identity", {}).get("current_phase", ""),
+                explicit_profile=trigger.get("execution_profile"),
+                explicit_model=trigger.get("model_override"),
+                explicit_provider=trigger.get("provider_override"),
+                risk_level=(trigger.get("risk_level") or self._project_risk_level(state)),
+                retry_count=self._agent_error_counts.get(consultant_id, 0),
+                provider_catalog=(
+                    trigger.get("provider_catalog") or self.config.provider_catalog
+                ),
+            )
+            route_action_id = router.record_route_selection(
+                self.config.project_id, selection
+            )
+            route_selection = selection.to_dict()
+            route_selection["route_action_id"] = route_action_id
+            runner = AgentRunner(
+                model=selection.model,
+                provider=selection.provider,
+                route_selection=route_selection,
+            )
             result = runner.run(consultant_id, prompt,
                                 project_id=self.config.project_id)
 

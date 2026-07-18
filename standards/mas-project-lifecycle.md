@@ -82,6 +82,10 @@ Lite collapses intake+specification and skips the consultant review phase. Still
 **Owner:** `evaluator_agent`
 **Exit artifact:** `evaluation/project_evaluation.yaml`
 **Scoring fields:** `acceptance_criteria_pass_rate`, `goal_achievement`, `decision_quality`, `documentation_completeness`
+**Entry gate:** Reconcile the approved `planning/execution_plan.yaml` into
+`shared_state.execution.tasks` and `shared_state.execution.milestones` before scoring.
+Existing progress is authoritative and must not be reset. Unapproved plans and dangling
+task, dependency, or milestone references fail closed.
 **Consultation gate:** `risk_advisor`, `quality_advisor`, and `efficiency_advisor` review evaluation evidence before Master accepts final conclusions or closes the project.
 
 ### improvement

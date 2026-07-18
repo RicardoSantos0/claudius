@@ -4,12 +4,10 @@ Populates mas_agents, mas_skills, mas_commands, mas_templates, mas_domains,
 mas_codebase, and mas_policies from the current filesystem state. Idempotent — safe to re-run.
 """
 import json
-import re
 import sqlite3
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 # Roots resolved centrally so seeding works from a clone or an installed workspace.
 # DB_PATH -> <mas>/data/episodic.db ; ROOT -> repo root (holds agents/, skills/).
@@ -161,11 +159,24 @@ def _seed_agents(conn: sqlite3.Connection, root: Path) -> int:
                 tools_json = json.dumps([])
             tier = _TIER_MAP.get(stem, "unknown")
             template_path = f"agents/{stem}.md"
+            model = fm.get("model", "")
+            model_profile = fm.get("model_profile", "auto")
             conn.execute(
                 """INSERT OR REPLACE INTO mas_agents
-                   (agent_id, name, tier, description, template_path, tools, status, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?)""",
-                (stem, name, tier, description, template_path, tools_json, json.dumps({})),
+                   (agent_id, name, tier, description, template_path, tools, status,
+                    model, model_profile, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)""",
+                (
+                    stem,
+                    name,
+                    tier,
+                    description,
+                    template_path,
+                    tools_json,
+                    model,
+                    model_profile,
+                    json.dumps({}),
+                ),
             )
             count += 1
         except Exception as exc:

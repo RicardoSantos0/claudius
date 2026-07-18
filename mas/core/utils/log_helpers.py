@@ -11,7 +11,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from core.adapters import postgres_store
 
@@ -135,6 +135,35 @@ def init_db(db_path: Path = DB_PATH, db_url: str | None = None) -> None:
                     VALUES (NEW.id, NEW.intent, NEW.payload);
                 END;
 
+            -- Privacy-safe call-routing telemetry. This is intentionally a
+            -- column allowlist rather than an arbitrary JSON payload.
+            CREATE TABLE IF NOT EXISTS route_telemetry (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp        TEXT NOT NULL,
+                project_id       TEXT,
+                agent_id         TEXT,
+                route_action_id  TEXT,
+                provider_catalog TEXT,
+                provider         TEXT,
+                model            TEXT,
+                profile          TEXT,
+                phase            TEXT,
+                source           TEXT,
+                retry_count      INTEGER NOT NULL DEFAULT 0,
+                escalated        INTEGER NOT NULL DEFAULT 0,
+                latency_ms       REAL,
+                input_tokens     INTEGER,
+                output_tokens    INTEGER,
+                cost_usd         REAL,
+                quality_score    REAL,
+                success          INTEGER NOT NULL DEFAULT 0,
+                error_type       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_route_telemetry_catalog_profile
+                ON route_telemetry(provider_catalog, profile);
+            CREATE INDEX IF NOT EXISTS idx_route_telemetry_timestamp
+                ON route_telemetry(timestamp);
+
             -- Graph tables: nodes and edges migrated from global_graph.yaml
             CREATE TABLE IF NOT EXISTS agent_graph (
                 id      TEXT PRIMARY KEY,
@@ -159,6 +188,8 @@ def init_db(db_path: Path = DB_PATH, db_url: str | None = None) -> None:
                 template_path      TEXT,
                 tools              TEXT,
                 status             TEXT DEFAULT 'active',
+                model              TEXT,
+                model_profile      TEXT DEFAULT 'auto',
                 metadata           TEXT,
                 last_score         REAL,
                 evaluation_count   INTEGER DEFAULT 0,
@@ -228,13 +259,15 @@ def init_db(db_path: Path = DB_PATH, db_url: str | None = None) -> None:
 
         # Add evaluation columns to mas_agents if they don't already exist
         # (handles databases created before these columns were introduced)
-        _AGENT_EVAL_COLS = [
+        _AGENT_MIGRATION_COLS = [
+            ("model", "TEXT"),
+            ("model_profile", "TEXT DEFAULT 'auto'"),
             ("last_score", "REAL"),
             ("evaluation_count", "INTEGER DEFAULT 0"),
             ("last_evaluated_at", "TEXT"),
             ("evaluation_summary", "TEXT"),
         ]
-        for col_name, col_type in _AGENT_EVAL_COLS:
+        for col_name, col_type in _AGENT_MIGRATION_COLS:
             try:
                 conn.execute(f"ALTER TABLE mas_agents ADD COLUMN {col_name} {col_type}")
             except Exception:

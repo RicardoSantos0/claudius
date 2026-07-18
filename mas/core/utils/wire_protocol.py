@@ -35,6 +35,7 @@ STATUS_CODES: dict[str, str] = {
     "capability:no_gaps":         "No capability gaps — all covered",
     "exec_plan:ready":            "Execution plan compiled",
     "milestone:complete":         "Milestone all tasks completed",
+    "task:delegated":             "Task delegated to another agent",
     "task:complete":              "Task completed successfully",
     "task:blocked":               "Task blocked — dependency or resource issue",
     "task:failed":                "Task failed — requires intervention",
@@ -61,7 +62,7 @@ STATUS_CODES: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 _PAYLOAD_MAP: dict[str, str] = {
-    "summary":                    "s",
+    "summary":                    "sum",
     "artifacts_produced":         "art",
     "decisions_made":             "dec",
     "open_questions":             "oq",
@@ -72,13 +73,14 @@ _PAYLOAD_MAP: dict[str, str] = {
     "recommendation":             "rec",
     "key_concerns":               "kc",
     "reasoning":                  "rsn",
-    "status":                     "st",
+    "status":                     "s",
     "action":                     "act",
     "path":                       "path",
     "data":                       "d",
 }
 
 _COMPACT_TO_EXPANDED: dict[str, str] = {v: k for k, v in _PAYLOAD_MAP.items()}
+_COMPACT_TO_EXPANDED["st"] = "status"  # legacy top-level status key
 
 FINDING_SCHEMA = {"path": "path", "status": "st", "action": "act"}
 FINDING_EXPAND = {v: k for k, v in FINDING_SCHEMA.items()}
@@ -99,6 +101,14 @@ class WireEncoder:
 
             if full_key == "findings" and isinstance(val, list):
                 wire[compact_key] = [self._encode_finding(f) for f in val]
+            elif (
+                full_key == "summary"
+                and "status" not in payload
+                and isinstance(val, str)
+                and (val in STATUS_CODES or ":" in val)
+            ):
+                # Legacy expanded payloads used summary as the status value.
+                wire["s"] = val
             else:
                 wire[compact_key] = val
 
@@ -166,6 +176,8 @@ class WireValidator:
             warnings.append(f"Unknown wire protocol version: {v!r} (expected {WIRE_VERSION!r})")
 
         s = payload.get("s")
+        if not s:
+            warnings.append("Missing s status field")
         if s and isinstance(s, str):
             if s not in STATUS_CODES and ":" not in s:
                 warnings.append(f"Unknown status code: {s!r}. Use 'section:status' format.")
@@ -203,6 +215,20 @@ def validate(payload: dict) -> tuple[bool, list[str]]:
 
 def is_wire_format(payload: dict) -> bool:
     return _validator.is_wire_format(payload)
+
+
+def normalize_handoff_payload(payload: dict, default_status: str) -> dict:
+    """Return a valid, additive wire envelope for a handoff payload.
+
+    Expanded legacy fields remain untouched.  Only the protocol version and
+    canonical status slot are supplied, and an explicit status always wins.
+    """
+    normalized = dict(payload)
+    normalized.setdefault("_v", WIRE_VERSION)
+    explicit_status = normalized.get("s")
+    expanded_status = normalized.pop("status", None)
+    normalized["s"] = explicit_status or expanded_status or default_status
+    return normalized
 
 
 def encode_decode_roundtrip(payload: dict) -> dict:

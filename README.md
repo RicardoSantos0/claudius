@@ -1,12 +1,12 @@
 # claudius
 
-A **governed multi-agent delivery framework for Claude Code**: reusable agents, MAS
-workflow skills, policy files, templates, and a Python CLI for project lifecycle,
-handoffs, shared state, and evaluation. It coordinates 16 specialized AI agents across
-core, established, supervised, and infrastructure roles through formal protocols for
-end-to-end project delivery.
+A provider-neutral **governed multi-agent delivery framework**: reusable agents, MAS
+workflow skills, policy files, templates, and a Python CLI/MCP server for project
+lifecycle, handoffs, shared state, evaluation, and phase-aware model routing. It
+coordinates 16 specialized AI agents across Claude Code, Codex, OpenCode, autonomous
+API providers, and paste-based manual loops.
 
-For advanced Claude Code users who want a structured, auditable multi-agent workflow —
+For advanced agent-tool users who want a structured, auditable multi-agent workflow —
 not a polished SaaS product. See [What's included / not included](#whats-included--not-included)
 and [MVP limitations](#mvp-limitations).
 
@@ -57,8 +57,8 @@ and [MVP limitations](#mvp-limitations).
   skill, plus project-specific agents — kept out of the MVP core.
 - Only a **fresh-install smoke test** ships (`mas/tests/test_smoke.py`); the full
   internal test suite stays in the development repo.
-- No credentials. Bring your own `ANTHROPIC_API_KEY` (see `.env.example`); the CLI
-  itself makes no API calls unless you run `mas run`.
+- No credentials. Bring the key for the provider you select (see `.env.example`);
+  prompt/ingest workflows make no API calls, and live canaries are opt-in.
 
 ## MVP limitations
 
@@ -73,8 +73,8 @@ This is a first public MVP (`v0.1.0`). Known limitations, deferred to later rele
 - **Vector search remains optional and disabled by default.** The `vector` extra
   currently pins ChromaDB below 1.x because GHSA-f4j7-r4q5-qw2c has no fixed
   ChromaDB 1.x release yet.
-- Autonomous `mas run` requires Anthropic credentials and is less battle-tested than
-  the manual (Claude Code) workflow.
+- Autonomous `mas run` requires credentials for its selected catalog and is less
+  battle-tested than the manual workflow.
 
 ---
 
@@ -84,7 +84,8 @@ This is a first public MVP (`v0.1.0`). Known limitations, deferred to later rele
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
-- Claude Code (VS Code extension)
+- Claude Code or Codex for integrated agent workflows; OpenCode and other LLM
+  surfaces work through MCP or the prompt/ingest loop
 
 ### Setup (per machine)
 
@@ -123,6 +124,18 @@ defaults to `~/.mas` (override with `$MAS_HOME`). The wheel bundles the framewor
 files as package data and `mas init-workspace` copies them into the workspace, so
 the CLI works without a clone. Running from a clone (source-tree mode, below) still
 works unchanged.
+
+Install the adapter extras needed for autonomous non-Anthropic catalogs:
+
+```bash
+pip install "claudius[openai]"    # OpenAI/Codex-compatible API routes
+pip install "claudius[litellm]"   # Gemini and other LiteLLM routes
+pip install "claudius[providers]" # both optional provider adapters
+```
+
+Source checkouts can use `uv sync --extra openai`, `--extra litellm`, or
+`--extra providers`. Manual prompt/ingest and MCP envelope routing do not require
+these SDK extras unless the MAS process itself makes the provider call.
 
 ### Run a MAS project
 
@@ -244,7 +257,7 @@ claude-config/
 
 A governed multi-agent delivery framework that coordinates 16 specialized AI agents through formal handoff protocols, access-controlled shared state, and policy enforcement.
 
-**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `psycopg` for Postgres, `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
+**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `openai`, `litellm`, `psycopg` for Postgres, and `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
 
 The vector extra deliberately avoids ChromaDB 1.x until the upstream advisory
 GHSA-f4j7-r4q5-qw2c has a fixed 1.x release. Keep vector storage disabled unless
@@ -373,7 +386,10 @@ Each standard phase transition requires:
 | `handoff_engine.py` | Handoff creation, acceptance, SQL event logging |
 | `access_control.py` | Field-level write permissions (updated 0.2.0 — broader write rights) |
 | `prompt_assembler.py` | State projection + FTS5-aware prompt injection |
-| `agent_runner.py` | Anthropic SDK wrapper; gated on `ANTHROPIC_API_KEY`; logs tokens |
+| `agent_runner.py` | Provider-adapter runner for Anthropic, OpenAI-compatible, LiteLLM, or custom transports; logs tokens and route telemetry |
+| `execution_profile_router.py` | Phase/risk/agent-aware semantic profile and provider-catalog selection |
+| `model_canary.py` | Preview-first, bounded provider/model identity canaries |
+| `route_telemetry.py` | Privacy-safe SQLite route telemetry and aggregates |
 | `consultation_engine.py` | Consultation lifecycle, synthesis, compact format |
 | `intake_checker.py` | Spec quality scoring (threshold ≥ 0.85) |
 | `capability_registry.py` | Roster, gap certificates, match scoring |
@@ -471,15 +487,29 @@ The runtime uses a SQL event store:
 - `prompt_assembler` injects the 5 most relevant past events into every agent prompt
   (uses semantic search with current phase as query; falls back to recent-5 if < 2 hits)
 
-### LLM Configuration
+### LLM / Provider Configuration
 
-| Agent | Model | Max Tokens | Temperature |
-|-------|-------|------------|-------------|
-| `master_orchestrator` | `claude-opus-4-7` | 4096 | 0.3 |
-| `efficiency_advisor` | `claude-haiku-4-5` | 4096 | 0.3 |
-| All others | `claude-sonnet-4-6` | 4096 | 0.3 |
+MAS routes a semantic profile before choosing a vendor model. Planning, review,
+and evaluation default to `reasoning`; bounded execution defaults to `economy`.
+High-risk, critical-agent, and retry paths escalate before any economy assignment.
 
-Model selection is canonical in `mas/system_config.yaml` (llm block) and per-agent in `mas/roster/registry_canonical.yaml`. Override at runtime via `MAS_MASTER_MODEL` / `MAS_DEFAULT_MODEL` env vars.
+`mas/system_config.yaml` ships interchangeable Anthropic, OpenAI, and
+Gemini/LiteLLM catalogs. Select one with `--catalog` or `MAS_MODEL_CATALOG`.
+All agent prompts use `model: inherit` and `model_profile: auto`, so the public
+roster is not pinned to Anthropic.
+
+| Surface | Route behavior |
+|---------|----------------|
+| Autonomous `mas run` | Engine-enforced provider/model route using the selected catalog |
+| Codex | Emits model and reasoning-effort hints through the prompt envelope/MCP |
+| OpenCode | Emits the selected `-m provider/model` launch arguments |
+| Generic manual UI | Records a recommended route without falsely claiming host enforcement |
+
+Inspect catalogs with `mas model-catalogs`, preview or opt into bounded calls with
+`mas model-canary [--live]`, and inspect privacy-safe aggregates with
+`mas route-metrics`. Missing adapter-supplied cost or quality values remain
+unmeasured rather than being reported as zero. See
+[`docs/architecture/model-routing.md`](docs/architecture/model-routing.md).
 
 ### Domain Contexts
 
@@ -571,6 +601,8 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 ### Further documentation
 
 - [docs/architecture.md](docs/architecture.md) — component & lifecycle map
+- [docs/architecture/model-routing.md](docs/architecture/model-routing.md) — phase-aware provider catalogs, canaries, and telemetry
+- [docs/architecture/surface-compatibility-contract.md](docs/architecture/surface-compatibility-contract.md) — shared contract for Codex, Claude Code, OpenCode, and other clients
 - [docs/operation-modes.md](docs/operation-modes.md) — Claude Code config mode vs source-tree MAS mode
 - [docs/governance/behavioral-discipline.md](docs/governance/behavioral-discipline.md) — MAS commit evidence for Claude Code, Codex, OpenCode, Copilot, and manual/package surfaces
 - [docs/authoring-agents.md](docs/authoring-agents.md) — add/update an agent without breaking registry invariants

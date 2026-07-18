@@ -24,7 +24,6 @@ Public API:
 import json as _json
 import logging
 from pathlib import Path
-from typing import Optional
 
 from core.utils.log_helpers import (
     DB_PATH,
@@ -50,6 +49,8 @@ __all__ = [
     "semantic_search",
     "query_token_usage",
     "record_manual_tokens",
+    "record_route_telemetry",
+    "aggregate_route_telemetry",
     "query_graph_node",
     "query_graph_edges",
     "format_events_for_prompt",
@@ -224,6 +225,41 @@ def record_manual_tokens(
     )
 
 
+def record_route_telemetry(
+    metadata: dict,
+    db_path: Path = DB_PATH,
+) -> int:
+    """Persist privacy-safe routing metadata on the configured SQL backend."""
+    resolved_url = _resolved_db_url(db_path)
+    if postgres_store.is_postgres_url(resolved_url):
+        return postgres_store.record_route_telemetry(resolved_url, metadata)
+    from core.engine.route_telemetry import RouteTelemetryStore
+
+    return RouteTelemetryStore(db_path).record(metadata)
+
+
+def aggregate_route_telemetry(
+    *,
+    provider_catalog: str | None = None,
+    profile: str | None = None,
+    db_path: Path = DB_PATH,
+) -> dict[str, int | float | None]:
+    """Aggregate routing telemetry on the configured SQLite/PostgreSQL backend."""
+    resolved_url = _resolved_db_url(db_path)
+    if postgres_store.is_postgres_url(resolved_url):
+        return postgres_store.aggregate_route_telemetry(
+            resolved_url,
+            provider_catalog=provider_catalog,
+            profile=profile,
+        )
+    from core.engine.route_telemetry import RouteTelemetryStore
+
+    return RouteTelemetryStore(db_path).aggregate(
+        provider_catalog=provider_catalog,
+        profile=profile,
+    )
+
+
 def query_graph_node(
     node_id: str,
     db_path: Path = DB_PATH,
@@ -328,7 +364,13 @@ def migrate_sqlite_to_postgres(sqlite_path: Path, postgres_url: str) -> dict:
     if not postgres_store.is_postgres_url(postgres_url):
         raise ValueError("A PostgreSQL database URL is required for migration.")
     postgres_store.init_db(postgres_url)
-    stats = {"agent_events": 0, "shared_states": 0, "agent_graph": 0, "agent_graph_edges": 0}
+    stats = {
+        "agent_events": 0,
+        "route_telemetry": 0,
+        "shared_states": 0,
+        "agent_graph": 0,
+        "agent_graph_edges": 0,
+    }
     if not sqlite_path.exists():
         return stats
 
@@ -351,6 +393,15 @@ def migrate_sqlite_to_postgres(sqlite_path: Path, postgres_url: str) -> dict:
             stats["agent_events"] += 1
 
         tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "route_telemetry" in tables:
+            from core.engine.route_telemetry import ROUTE_TELEMETRY_COLUMNS
+
+            columns = ", ".join(("timestamp", *ROUTE_TELEMETRY_COLUMNS))
+            rows = conn.execute(f"SELECT {columns} FROM route_telemetry").fetchall()
+            for row in rows:
+                postgres_store.record_route_telemetry(postgres_url, dict(row))
+                stats["route_telemetry"] += 1
+
         if "shared_states" in tables:
             rows = conn.execute("SELECT project_id, state FROM shared_states").fetchall()
             for row in rows:

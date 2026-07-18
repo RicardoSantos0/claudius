@@ -50,7 +50,7 @@ MAS marker or explicit `MAS-BYPASS:` rationale.
 Wired as a `commit-msg` hook (`.pre-commit-config.yaml` ->
 `mas-discipline-commit-msg`) and as a push-time CI marker check.
 
-Reference: proj-20260626-001-codex-behavioral-discipline-enforcement.
+Reference: the internal behavioral-discipline enforcement project.
 
 ## `mas/tools/roster_sync.py`
 

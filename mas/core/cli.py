@@ -17,7 +17,9 @@ Commands
 import re
 import os
 import sys
+import json
 import logging
+import importlib.util
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -67,15 +69,63 @@ def _resolve_project_dir(project_id: str) -> Path:
     return resolve_project_dir(project_id, projects_root=_get_projects_dir())
 
 
-def _execution_mode_label() -> str:
-    """Which execution path the engine will use by default.
+def _default_execution_route():
+    from core.engine.execution_profile_router import ExecutionProfileRouter
 
-    'manual (no API calls)' — the default Claude Code workflow; only `mas run` calls the
-    Anthropic API, and only when ANTHROPIC_API_KEY is set.
-    """
-    if os.getenv("ANTHROPIC_API_KEY"):
-        return "manual (no API calls) — `mas run` available (ANTHROPIC_API_KEY set)"
-    return "manual (no API calls) — default; `mas run` needs ANTHROPIC_API_KEY"
+    return ExecutionProfileRouter().resolve("master_orchestrator", "intake")
+
+
+def _provider_readiness(selection) -> dict:
+    """Describe credentials and optional adapter needed for one autonomous route."""
+    provider = selection.provider
+    model = selection.model
+    base_url = os.getenv("MAS_OPENAI_BASE_URL", "")
+    if provider == "anthropic":
+        credential_names = ["ANTHROPIC_API_KEY"]
+        credential_ready = bool(os.getenv("ANTHROPIC_API_KEY"))
+        package = "anthropic"
+    elif provider in {"openai", "azure"}:
+        credential_names = ["OPENAI_API_KEY"]
+        credential_ready = bool(os.getenv("OPENAI_API_KEY") or base_url)
+        package = "openai"
+    elif provider == "litellm":
+        credential_names = (
+            ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            if model.startswith("gemini/")
+            else ["provider-specific API key"]
+        )
+        credential_ready = (
+            bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            if model.startswith("gemini/")
+            else True
+        )
+        package = "litellm"
+    else:
+        credential_names = [f"credentials for {provider}"]
+        credential_ready = False
+        package = provider
+    return {
+        "credential_names": credential_names,
+        "credential_ready": credential_ready,
+        "package": package,
+        "package_ready": importlib.util.find_spec(package) is not None,
+    }
+
+
+def _execution_mode_label() -> str:
+    """Provider/catalog-aware label for manual and autonomous execution readiness."""
+    try:
+        route = _default_execution_route()
+    except ValueError as exc:
+        return f"manual available; autonomous route configuration invalid: {exc}"
+    readiness = _provider_readiness(route)
+    ready = readiness["credential_ready"] and readiness["package_ready"]
+    state = "ready" if ready else "not ready"
+    return (
+        "manual (no API calls); autonomous "
+        f"catalog={route.provider_catalog or 'legacy'} profile={route.profile} "
+        f"provider={route.provider} model={route.model} is {state}"
+    )
 
 
 def _slugify(text: str) -> str:
@@ -192,8 +242,22 @@ def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
     return prompt
 
 
-def _emit_prompt(project_id: str, agent_id: str, assembled: str) -> None:
-    header = f"# Agent: {agent_id}  |  Project: {project_id}\n# Prompt length: {len(assembled)} chars\n#" + "-" * 60
+def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None) -> None:
+    header = f"# Agent: {agent_id}  |  Project: {project_id}\n# Prompt length: {len(assembled)} chars"
+    if selection is not None:
+        header += (
+            f"\n# Route: {selection.surface}/{selection.profile}/"
+            f"{selection.provider}/{selection.model}/"
+            f"{selection.enforcement_capability}"
+        )
+        hints = []
+        if selection.reasoning_effort:
+            hints.append(f"reasoning_effort={selection.reasoning_effort}")
+        if selection.launch_args:
+            hints.append("launch=" + " ".join(selection.launch_args))
+        if hints:
+            header += "\n# Route hint: " + " | ".join(hints)
+    header += "\n#" + "-" * 60
     out = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout
     out.write((header + "\n" + assembled + "\n").encode("utf-8", errors="replace"))
 
@@ -661,14 +725,42 @@ def doctor(project_id: str | None):
     def add(status: str, name: str, detail: str) -> None:
         checks.append((status, name, detail))
 
-    # Default execution path: manual (no API calls). Only `mas run` calls the Anthropic API.
+    # Default execution path: manual remains available without provider credentials.
     add("ok", "execution_mode", _execution_mode_label())
 
-    # API key is optional for manual Claude Code flow, required for `mas run`.
-    if os.getenv("ANTHROPIC_API_KEY"):
-        add("ok", "api_key", "ANTHROPIC_API_KEY detected")
-    else:
-        add("warn", "api_key", "ANTHROPIC_API_KEY missing (required for `mas run`, optional for manual `mas prompt` flow)")
+    # Resolve the configured autonomous catalog and report its actual adapter/key.
+    try:
+        route = _default_execution_route()
+        add(
+            "ok",
+            "execution_route",
+            f"catalog={route.provider_catalog or 'legacy'} profile={route.profile} "
+            f"provider={route.provider} model={route.model}",
+        )
+        readiness = _provider_readiness(route)
+        credential_label = " or ".join(readiness["credential_names"])
+        add(
+            "ok" if readiness["credential_ready"] else "warn",
+            "provider_credentials",
+            (
+                f"{credential_label} detected"
+                if readiness["credential_ready"]
+                else f"{credential_label} missing (required for this `mas run` route; "
+                     "manual `mas prompt` remains available)"
+            ),
+        )
+        add(
+            "ok" if readiness["package_ready"] else "warn",
+            "provider_adapter",
+            (
+                f"Python package {readiness['package']!r} available"
+                if readiness["package_ready"]
+                else f"Python package {readiness['package']!r} missing; install the "
+                     "matching optional dependency"
+            ),
+        )
+    except ValueError as exc:
+        add("fail", "execution_route", str(exc))
 
     env_path = ROOT.parent / ".env"
     if env_path.exists():
@@ -906,7 +998,17 @@ def resume(project_id: str, show_prompt: bool):
 
     if show_prompt:
         assembled = _assemble_prompt(project_id, next_agent, state)
-        _emit_prompt(project_id, next_agent, assembled)
+        from core.engine.execution_profile_router import ExecutionProfileRouter
+        router = ExecutionProfileRouter()
+        phase = state.get("core_identity", {}).get("current_phase", "")
+        selection = router.resolve(
+            next_agent,
+            phase,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+            surface="generic",
+        )
+        router.record_route_selection(project_id, selection)
+        _emit_prompt(project_id, next_agent, assembled, selection)
 
 
 def _record_resume_skill_recommendations(project_id: str, state: dict, project_dir: Path) -> None:
@@ -1140,14 +1242,14 @@ def close(project_id: str):
             click.echo(f"[warn] Pre-close trace check failed: {exc}", err=True)
 
     if current_status == "closed":
-        click.echo(f"[info] Project is already closed — ensuring final artifacts and cleanup.")
+        click.echo("[info] Project is already closed — ensuring final artifacts and cleanup.")
     else:
         sm.snapshot(current_phase or "pre-close")
         sm.write("master_orchestrator", "core_identity", "status", "closed")
         if current_phase not in ("closed", ""):
             sm.write("master_orchestrator", "core_identity", "current_phase", "closed")
             sm.system_append("workflow", "completed_phases", current_phase)
-        click.echo(f"[ok] Project closed.")
+        click.echo("[ok] Project closed.")
 
     # Reload state after writes and preserve final human/readable artifacts.
     state = sm.load()
@@ -1703,7 +1805,6 @@ def explain(project_id: str, action_id: str | None, show_last: bool):
     click.echo("-" * 60)
     for key, value in event.items():
         if isinstance(value, (dict, list)):
-            import json
             click.echo(f"  {key}:\n{yaml.dump(value, default_flow_style=False, allow_unicode=True).rstrip()}")
         else:
             click.echo(f"  {key}: {value}")
@@ -1790,8 +1891,29 @@ def check_config():
     if sc_path.exists():
         try:
             with open(sc_path, encoding="utf-8") as f:
-                yaml.safe_load(f)
+                system_config = yaml.safe_load(f) or {}
             add("ok", "system_config.yaml", str(sc_path))
+            try:
+                from core.engine.execution_profile_router import ExecutionProfileRouter
+
+                router = ExecutionProfileRouter(system_config)
+                catalogs = (system_config.get("llm", {}) or {}).get(
+                    "provider_catalogs", {}
+                ) or {}
+                for catalog_name in catalogs:
+                    router.resolve(
+                        "catalog_validator",
+                        "validation",
+                        explicit_profile="standard",
+                        provider_catalog=catalog_name,
+                    )
+                add(
+                    "ok",
+                    "model_catalog_lifecycle",
+                    f"{len(catalogs)} catalog(s) active and within validation age",
+                )
+            except ValueError as exc:
+                add("fail", "model_catalog_lifecycle", str(exc))
         except yaml.YAMLError as e:
             add("fail", "system_config.yaml", f"YAML parse error: {e}")
     else:
@@ -2018,7 +2140,7 @@ def reopen(project_id: str, phase: str, reason: str):
         logger.debug("reject event recording failed (non-blocking): %s", exc)
 
     click.echo(f"[ok] Project reopened: status=active  phase={phase}")
-    click.echo(f"     Note: re-run `mas snapshot` to capture the reopen state.")
+    click.echo("     Note: re-run `mas snapshot` to capture the reopen state.")
 
 
 # ---------------------------------------------------------------------------
@@ -2171,6 +2293,144 @@ def migrate_graph():
 
 
 # ---------------------------------------------------------------------------
+# Model catalog, canary, and route-metrics operations
+# ---------------------------------------------------------------------------
+
+@main.command("model-catalogs")
+def model_catalogs():
+    """List configured model catalogs and validate their lifecycle metadata."""
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    from core.utils.config import load_config
+
+    llm = load_config().get("llm", {}) or {}
+    catalogs = llm.get("provider_catalogs", {}) or {}
+    if not catalogs:
+        raise click.ClickException("no provider catalogs are configured")
+    router = ExecutionProfileRouter()
+    click.echo("catalog      lifecycle  validated   provider   standard model")
+    click.echo("-" * 76)
+    for name, catalog in sorted(catalogs.items()):
+        try:
+            route = router.resolve(
+                "catalog_validator",
+                "validation",
+                explicit_profile="standard",
+                provider_catalog=name,
+            )
+        except ValueError as exc:
+            raise click.ClickException(f"catalog {name!r}: {exc}") from exc
+        click.echo(
+            f"{name:<12} {str(catalog.get('lifecycle_state', 'unknown')):<10} "
+            f"{str(catalog.get('validated_at', '')):<11} {route.provider:<10} "
+            f"{route.model}"
+        )
+
+
+@main.command("model-canary")
+@click.option("--catalog", "catalog_name", required=True,
+              help="Configured provider catalog to check.")
+@click.option("--live", is_flag=True, default=False,
+              help="Execute one bounded non-governed provider request.")
+def model_canary(catalog_name: str, live: bool):
+    """Preview or run an opt-in, credentialed provider canary."""
+    from core.engine.model_canary import run_provider_canary
+    from core.utils.config import load_config
+
+    catalogs = (load_config().get("llm", {}) or {}).get("provider_catalogs", {}) or {}
+    catalog = catalogs.get(catalog_name)
+    if not isinstance(catalog, dict):
+        available = ", ".join(sorted(catalogs)) or "<none>"
+        raise click.ClickException(
+            f"unknown provider catalog {catalog_name!r}; available: {available}"
+        )
+
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    router = ExecutionProfileRouter()
+    selection = router.resolve(
+        "catalog_validator",
+        "validation",
+        explicit_profile="standard",
+        provider_catalog=catalog_name,
+    )
+
+    profiles = catalog.get("profiles", {}) or {}
+    target = profiles.get("standard") or profiles.get("economy") or profiles.get("reasoning")
+    model = target.get("model") if isinstance(target, dict) else target
+    if not live:
+        click.echo(
+            f"[preview] catalog={catalog_name} provider={catalog.get('provider')} "
+            f"model={model}; pass --live to execute the bounded canary"
+        )
+        return
+
+    route_action_id = router.record_route_selection("mas-system", selection)
+    route_selection = selection.to_dict()
+    route_selection["route_action_id"] = route_action_id
+
+    def _invoke(**kwargs):
+        from core.engine.agent_runner import AgentRunner
+
+        runner = AgentRunner(
+            model=str(kwargs["model"]),
+            provider=str(kwargs["provider"]),
+            route_selection=route_selection,
+        )
+        if not runner.available:
+            raise RuntimeError("provider adapter is unavailable")
+        result = runner.run(
+            "model_canary",
+            str(kwargs["prompt"]),
+            project_id="mas-system",
+            max_tokens=int(kwargs["max_output_tokens"]),
+        )
+        if result.get("error"):
+            raise RuntimeError("provider canary failed")
+        return {
+            "reported_model": result.get("reported_model"),
+            "output": result.get("text", ""),
+        }
+
+    def _audit_sink(event: dict) -> None:
+        from core.engine.event_recorder import EventRecorder
+
+        EventRecorder().record_simple(
+            project_id="mas-system",
+            actor="model_canary",
+            action_type="decision_recorded",
+            intent="Bounded provider canary completed",
+            payload=event,
+        )
+
+    result = run_provider_canary(
+        catalog_name,
+        catalog,
+        credential_lookup=lambda name: os.getenv(name) if name else None,
+        invoke=_invoke,
+        audit_sink=_audit_sink,
+    )
+    click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+
+
+@main.command("route-metrics")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Filter by provider catalog.")
+@click.option("--profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Filter by semantic profile.")
+@click.option("--db-path", type=click.Path(path_type=Path), default=None,
+              help="Override the SQLite database path.")
+def route_metrics(provider_catalog: str | None, profile: str | None, db_path: Path | None):
+    """Show privacy-safe aggregate route cost, latency, retry, and quality metrics."""
+    from core.db import aggregate_route_telemetry
+
+    kwargs = {"provider_catalog": provider_catalog, "profile": profile}
+    if db_path is not None:
+        kwargs["db_path"] = db_path
+    aggregate = aggregate_route_telemetry(**kwargs)
+    click.echo(json.dumps(aggregate, ensure_ascii=False, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
 # mas run — autonomous orchestration loop
 # ---------------------------------------------------------------------------
 
@@ -2182,7 +2442,25 @@ def migrate_graph():
               help="Skip human confirmation at phase boundaries.")
 @click.option("--phase", "target_phase", default=None, metavar="PHASE",
               help="Stop after this phase completes (e.g. 'specification').")
-def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
+@click.option("--profile", "execution_profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Explicit semantic profile for every autonomous dispatch.")
+@click.option("--model", "model_override", default=None,
+              help="Explicit model for every autonomous dispatch (requires --provider).")
+@click.option("--provider", "provider_override", default=None,
+              help="Explicit provider for every autonomous dispatch (requires --model).")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Configured provider catalog for autonomous dispatch.")
+def run(
+    project_id: str,
+    max_steps: int,
+    auto: bool,
+    target_phase: str | None,
+    execution_profile: str | None,
+    model_override: str | None,
+    provider_override: str | None,
+    provider_catalog: str | None,
+):
     """Run the autonomous orchestration loop for a project.
 
     Drives the project through intake -> specification -> planning phases,
@@ -2202,10 +2480,32 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig, StopReason
     from core.runtime_config import get_database_backend, get_vector_backend
 
-    runner = AgentRunner()
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    state = _load_state(project_id)
+    initial_phase = state.get("core_identity", {}).get("current_phase", "intake")
+    try:
+        initial_route = ExecutionProfileRouter().resolve(
+            "master_orchestrator",
+            initial_phase,
+            explicit_profile=execution_profile,
+            explicit_model=model_override,
+            explicit_provider=provider_override,
+            provider_catalog=provider_catalog,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    runner = AgentRunner(
+        model=initial_route.model,
+        provider=initial_route.provider,
+        route_selection=initial_route.to_dict(),
+    )
     if not runner.available:
         click.echo(
-            "[error] Live execution is mandatory. Set ANTHROPIC_API_KEY before running `mas run`.",
+            "[error] Live execution is mandatory, but the selected route is unavailable: "
+            f"provider={initial_route.provider} model={initial_route.model}. "
+            "Configure that provider's credentials/SDK or compatible endpoint before "
+            "running `mas run`.",
             err=True,
         )
         sys.exit(1)
@@ -2218,11 +2518,25 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
         max_steps=max_steps,
         auto=auto,
         target_phase=target_phase,
+        execution_profile=execution_profile,
+        model_override=model_override,
+        provider_override=provider_override,
+        provider_catalog=provider_catalog,
     )
 
     click.echo(f"\n[mas run] {project_id}")
     if auto:
         click.echo("  mode: auto (phase boundaries skipped)")
+    click.echo(
+        f"  route: catalog={initial_route.provider_catalog or 'legacy'} "
+        f"profile={initial_route.profile} provider={initial_route.provider} "
+        f"model={initial_route.model}"
+        + (
+            f" reasoning_effort={initial_route.reasoning_effort}"
+            if initial_route.reasoning_effort
+            else ""
+        )
+    )
     click.echo(f"  storage: db={db_backend['active_provider']} vector={'chromadb' if vector_backend.get('enabled') else 'disabled'}")
     click.echo("")
 
@@ -2256,7 +2570,39 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
 @main.command()
 @click.argument("project_id")
 @click.argument("agent_id", required=False, default=None)
-def prompt(project_id: str, agent_id: str | None):
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a structured manual execution envelope as JSON.")
+@click.option("--profile", "execution_profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Explicit semantic execution profile override.")
+@click.option("--model", "model_override", default=None,
+              help="Explicit model override (requires --provider).")
+@click.option("--provider", "provider_override", default=None,
+              help="Explicit provider override (requires --model).")
+@click.option("--risk-level", default=None,
+              type=click.Choice(["low", "medium", "high", "critical"]),
+              help="Risk context used for routing escalation.")
+@click.option("--retry-count", default=0, type=click.IntRange(min=0), show_default=True)
+@click.option("--enforcement-capability", default=None,
+              help="Manual client capability, e.g. recommended or client_enforced.")
+@click.option("--surface", default="generic", show_default=True,
+              type=click.Choice(["generic", "codex", "opencode"]),
+              help="Manual client surface for provider/model adapter hints.")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Provider catalog override (e.g. anthropic, openai, gemini).")
+def prompt(
+    project_id: str,
+    agent_id: str | None,
+    as_json: bool,
+    execution_profile: str | None,
+    model_override: str | None,
+    provider_override: str | None,
+    risk_level: str | None,
+    retry_count: int,
+    enforcement_capability: str | None,
+    surface: str,
+    provider_catalog: str | None,
+):
     """Assemble and print the next agent's prompt for manual/provider-neutral mode.
 
     Use this command to get the governed prompt, run it in Claude Code, Codex,
@@ -2285,7 +2631,41 @@ def prompt(project_id: str, agent_id: str | None):
         agent_id = normalize_agent_id(agent_id) or agent_id
 
     assembled = _assemble_prompt(project_id, agent_id, state)
-    _emit_prompt(project_id, agent_id, assembled)
+    from core.engine.execution_profile_router import (
+        ExecutionProfileRouter,
+        build_manual_envelope,
+    )
+    router = ExecutionProfileRouter()
+    phase = state.get("core_identity", {}).get("current_phase", "")
+    effective_risk = (
+        risk_level
+        or state.get("project_definition", {}).get("risk_classification")
+    )
+    try:
+        selection = router.resolve(
+            agent_id,
+            phase,
+            explicit_profile=execution_profile,
+            explicit_model=model_override,
+            explicit_provider=provider_override,
+            risk_level=effective_risk,
+            retry_count=retry_count,
+            enforcement_capability=(
+                enforcement_capability or router.enforcement_for_surface(surface)
+            ),
+            surface=surface,
+            provider_catalog=provider_catalog,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    router.record_route_selection(project_id, selection)
+    if as_json:
+        envelope = build_manual_envelope(
+            project_id, agent_id, phase, assembled, selection
+        )
+        click.echo(json.dumps(envelope, ensure_ascii=False))
+        return
+    _emit_prompt(project_id, agent_id, assembled, selection)
 
 
 # ---------------------------------------------------------------------------
@@ -2300,7 +2680,19 @@ def prompt(project_id: str, agent_id: str | None):
               help="File with the LLM's raw response (default: read stdin).")
 @click.option("--show-prompt/--no-show-prompt", default=True,
               help="After applying, print the next agent prompt (default: yes).")
-def ingest(project_id: str, agent_id: str | None, response_file: str | None, show_prompt: bool):
+@click.option("--surface", default="generic", show_default=True,
+              type=click.Choice(["generic", "codex", "opencode"]),
+              help="Manual client surface for the automatically selected next route.")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Provider catalog for the automatically selected next route.")
+def ingest(
+    project_id: str,
+    agent_id: str | None,
+    response_file: str | None,
+    show_prompt: bool,
+    surface: str,
+    provider_catalog: str | None,
+):
     """Ingest an LLM response (from ANY provider) and apply it to governed state.
 
     The provider-agnostic manual loop:  `mas prompt` -> run in any LLM -> `mas ingest`.
@@ -2379,7 +2771,25 @@ def ingest(project_id: str, agent_id: str | None, response_file: str | None, sho
     else:
         nxt = loop._determine_next_agent(state)
     click.echo(f"\n# NEXT: run this prompt in any LLM, then `mas ingest {project_id}` again\n")
-    _emit_prompt(project_id, nxt, _assemble_prompt(project_id, nxt, state))
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    router = ExecutionProfileRouter()
+    try:
+        selection = router.resolve(
+            nxt,
+            cur_phase,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+            surface=surface,
+            provider_catalog=provider_catalog,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    router.record_route_selection(project_id, selection)
+    _emit_prompt(
+        project_id,
+        nxt,
+        _assemble_prompt(project_id, nxt, state),
+        selection,
+    )
 
 
 # ---------------------------------------------------------------------------

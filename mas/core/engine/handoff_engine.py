@@ -24,7 +24,6 @@ import json
 import logging
 import argparse
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 import yaml
@@ -35,7 +34,11 @@ ROOT = mas_root()
 from .shared_state_manager import SharedStateManager
 from core.engine.audit_logger import get_logger
 from core.engine.checkpoint_writer import CheckpointWriter
-from core.utils.wire_protocol import WireValidator as _WireValidator
+from core.utils.wire_protocol import (
+    STATUS_CODES,
+    WireValidator as _WireValidator,
+    normalize_handoff_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +190,10 @@ class HandoffEngine:
         Create a new handoff record and write it to shared state.
         Returns the handoff dict.
         """
+        default_status = (
+            "task:complete" if to_agent == "master_orchestrator" else "task:delegated"
+        )
+        payload = normalize_handoff_payload(payload, default_status=default_status)
         state = sm.load()
         seq = self._next_sequence(state, sm.project_id)
         handoff_id = self._make_id(sm.project_id, seq)
@@ -392,7 +399,6 @@ class HandoffEngine:
                 break
         if not found:
             return False
-        from pathlib import Path
         import yaml as _yaml
         with open(sm.state_path, "w", encoding="utf-8") as f:
             _yaml.dump(state, f, default_flow_style=False,
@@ -560,7 +566,7 @@ class HandoffEngine:
         "task_description": "task",
     }
     _PAYLOAD_COMPACT_MAP = {
-        "summary": "s",
+        "summary": "sum",
         "artifacts_produced": "art",
         "decisions_made": "dec",
         "open_questions": "oq",
@@ -630,9 +636,25 @@ class HandoffEngine:
         payload: dict = {}
         for short_key, full_key in cls._PAYLOAD_EXPAND_MAP.items():
             payload[full_key] = cp.get(short_key, [] if full_key != "summary" else "")
+        # Historical records stored prose summary in ``p.s``. Canonical v1
+        # stores summary in ``p.sum`` and reserves ``p.s`` for wire status.
+        legacy_summary = (
+            "sum" not in cp
+            and isinstance(cp.get("s"), str)
+            and cp["s"] not in STATUS_CODES
+            and ":" not in cp["s"]
+        )
+        if legacy_summary:
+            payload["summary"] = cp["s"]
         # Extra payload keys
         for k, v in cp.items():
-            if k not in cls._PAYLOAD_EXPAND_MAP:
+            if k == "ws":
+                # Transitional records written while summary/status keys
+                # conflicted used ``p.ws`` for status.
+                payload["s"] = v
+            elif k == "s" and legacy_summary:
+                continue
+            elif k not in cls._PAYLOAD_EXPAND_MAP:
                 payload[k] = v
         h["payload"] = payload
 

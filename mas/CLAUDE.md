@@ -83,12 +83,13 @@ mas prompt proj-YYYYMMDD-NNN-my-project inquirer_agent
 mas status proj-YYYYMMDD-NNN-my-project
 ```
 
-### Mode 2 — `mas run` CLI (requires ANTHROPIC_API_KEY with credits)
+### Mode 2 — `mas run` CLI (selected provider credential + adapter)
 
 ```powershell
-# 1. Set your API key
-$env:ANTHROPIC_API_KEY = "<your-api-key>"
-# Or: add ANTHROPIC_API_KEY=<your-api-key> to .env at repo root
+# 1. Select a catalog and set its credential (example: OpenAI)
+$env:MAS_MODEL_CATALOG = "openai"
+$env:OPENAI_API_KEY = "<your-api-key>"
+# Anthropic uses ANTHROPIC_API_KEY; Gemini/LiteLLM uses GEMINI_API_KEY.
 
 # 2. Run the loop
 mas run proj-YYYYMMDD-NNN-my-project
@@ -285,7 +286,7 @@ Modules in `mas/core/engine/` (engine subpackage — use full path):
 | `spawn_policy.py` | `python mas/core/engine/spawn_policy.py` | Spawn validation; `LITE_MODE_NO_SPAWN` check |
 | `training_engine.py` | `python mas/core/engine/training_engine.py` | Proposal generation, backlog management |
 | `consultation_engine.py` | `python mas/core/engine/consultation_engine.py` | Consultation lifecycle, synthesis |
-| `agent_runner.py` | — (library) | Anthropic SDK wrapper; gated on `ANTHROPIC_API_KEY`; logs token usage |
+| `agent_runner.py` | — (library) | Provider-adapter runner for Anthropic, OpenAI-compatible, LiteLLM, and custom transports; logs token and route telemetry |
 | `prompt_assembler.py` | — (library) | State projection + FTS5-aware prompt building |
 | `access_control.py` | — (library) | Field-level write permissions matrix |
 | `skill_bridge.py` | — (library) | Agent-to-skill gateway with auth matrix |

@@ -41,10 +41,9 @@ repos:
 
       - id: mas-discipline-commit-msg
         name: Require MAS evidence in commit messages
-        entry: uv run --no-sync python scripts/check_mas_discipline.py --message-file
+        entry: uv run --no-sync python scripts/check_mas_discipline.py --skip-project-state --message-file
         language: system
         stages: [commit-msg]
         pass_filenames: true
-        # Commit messages must include `MAS: proj-...`; local hooks also verify
-        # the referenced project has handoff trace, token accounting, and closure
-        # artifacts. Use `MAS-BYPASS: <rationale>` only for explicit emergencies.
+        # Public mirrors intentionally exclude mas/projects. Require the MAS marker
+        # while validating project closure in the governed private workspace.

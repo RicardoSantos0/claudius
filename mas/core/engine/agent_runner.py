@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -105,7 +106,10 @@ class ProviderAdapter(ABC):
         """Return a live client object, or None when the provider is unavailable."""
 
     @abstractmethod
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         """Run one call; return {text, tokens_used, model, provider[, tokens_prompt,
         tokens_completion][, error]}."""
 
@@ -125,8 +129,11 @@ class _AnthropicAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
-        _ = agent_id
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
+        _ = agent_id, reasoning_effort
         kwargs: dict = {
             "model": model,
             "max_tokens": max_tokens,
@@ -139,10 +146,13 @@ class _AnthropicAdapter(ProviderAdapter):
             text = msg.content[0].text if msg.content else ""
             tp = msg.usage.input_tokens or 0
             tc = msg.usage.output_tokens or 0
+            reported_model = getattr(msg, "model", None)
             return {
                 "text": text, "tokens_used": tp + tc,
                 "tokens_prompt": tp, "tokens_completion": tc,
-                "model": model, "provider": "anthropic",
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": "anthropic",
             }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
@@ -172,17 +182,30 @@ class _OpenAIAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         _ = agent_id
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        kwargs = {"model": model, "max_tokens": max_tokens, "messages": messages}
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         try:
-            resp = client.chat.completions.create(model=model, max_tokens=max_tokens, messages=messages)
+            resp = client.chat.completions.create(**kwargs)
             text = resp.choices[0].message.content or ""
             tokens = resp.usage.total_tokens if resp.usage else 0
-            return {"text": text, "tokens_used": tokens, "model": model, "provider": self.name}
+            reported_model = getattr(resp, "model", None)
+            return {
+                "text": text,
+                "tokens_used": tokens,
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": self.name,
+            }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
                     "provider": self.name, "error": str(exc)}
@@ -203,13 +226,18 @@ class _LiteLLMAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         _ = agent_id
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         base_url = _resolve_base_url()
         if base_url:
             kwargs["api_base"] = base_url
@@ -218,7 +246,14 @@ class _LiteLLMAdapter(ProviderAdapter):
             text = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
             tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage else 0
-            return {"text": text, "tokens_used": tokens, "model": model, "provider": "litellm"}
+            reported_model = getattr(resp, "model", None)
+            return {
+                "text": text,
+                "tokens_used": tokens,
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": "litellm",
+            }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
                     "provider": "litellm", "error": str(exc)}
@@ -241,10 +276,16 @@ class AgentRunner:
         model: str = DEFAULT_MODEL,
         db_path: Optional[Path] = None,
         provider: Optional[str] = None,
+        route_selection: Optional[dict] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.model = model
         self.provider = (provider or _resolve_provider()).strip().lower()
         self._db_path = db_path
+        self._route_selection = route_selection or {}
+        self.reasoning_effort = (
+            reasoning_effort or self._route_selection.get("reasoning_effort")
+        )
         self._adapter = _ADAPTERS.get(self.provider)
         self._client = self._adapter.init_client() if self._adapter else None
 
@@ -297,14 +338,34 @@ class AgentRunner:
                 "error": self._unavailable_msg(), "retryable": False,
             }
 
-        result = self._adapter.call(
-            self._client, agent_id=agent_id, prompt=prompt,
-            system_prompt=system_prompt, model=self.model, max_tokens=max_tokens,
-        )
+        started = time.perf_counter()
+        try:
+            result = self._adapter.call(
+                self._client, agent_id=agent_id, prompt=prompt,
+                system_prompt=system_prompt, model=self.model, max_tokens=max_tokens,
+                reasoning_effort=self.reasoning_effort,
+            )
+        except Exception:
+            self._record_route_telemetry(
+                project_id=project_id,
+                agent_id=agent_id,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                success=False,
+                error_type="provider_exception",
+            )
+            raise
+        latency_ms = (time.perf_counter() - started) * 1000
 
         if result.get("error"):
             error_str = result["error"]
             retryable = not any(m in error_str.lower() for m in _NON_RETRYABLE)
+            self._record_route_telemetry(
+                project_id=project_id,
+                agent_id=agent_id,
+                latency_ms=latency_ms,
+                success=False,
+                error_type="provider_error",
+            )
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
                 "error": error_str, "retryable": retryable,
@@ -314,13 +375,24 @@ class AgentRunner:
         tc = int(result.get("tokens_completion", 0) or 0)
         if not tp and not tc:  # providers that report only a total
             tc = int(result.get("tokens_used", 0) or 0)
-        self._log_event(project_id, agent_id, prompt,
+        self._log_event(project_id, agent_id,
                         tokens_prompt=tp, tokens_completion=tc)
+        self._record_route_telemetry(
+            project_id=project_id,
+            agent_id=agent_id,
+            latency_ms=latency_ms,
+            success=True,
+            input_tokens=tp,
+            output_tokens=tc,
+            cost_usd=result.get("cost_usd"),
+            quality_score=result.get("quality_score"),
+        )
 
         return {
             "text": result.get("text", ""),
             "tokens_used": result.get("tokens_used", 0),
-            "model": self.model,
+            "model": result.get("model") or self.model,
+            "reported_model": result.get("reported_model"),
         }
 
     # ------------------------------------------------------------------
@@ -331,7 +403,6 @@ class AgentRunner:
         self,
         project_id: str,
         agent_id: str,
-        prompt: str,
         tokens_prompt: int = 0,
         tokens_completion: int = 0,
     ) -> None:
@@ -348,7 +419,7 @@ class AgentRunner:
                 project_id=project_id,
                 agent_id=agent_id,
                 action_type="agent_call",
-                intent=prompt[:120],
+                intent="Agent provider call completed",
                 result_shape=f"tokens={tokens_total}",
                 payload={
                     "model":             self.model,
@@ -356,8 +427,61 @@ class AgentRunner:
                     "tokens_prompt":     tokens_prompt,
                     "tokens_completion": tokens_completion,
                     "tokens_total":      tokens_total,
+                    "route_selection":   self._route_selection,
+                    "reasoning_effort":  self.reasoning_effort,
                 },
                 **kwargs,
             )
         except Exception as exc:
             logger.debug("agent-runner telemetry failed (non-blocking): %s", exc)
+
+    def _record_route_telemetry(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        latency_ms: float,
+        success: bool,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: object = None,
+        quality_score: object = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record metadata only; never accept prompt, response, or credential data."""
+        if not project_id:
+            return
+        try:
+            from core.db import record_route_telemetry
+
+            source = str(self._route_selection.get("source") or "")
+            metadata = {
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "route_action_id": self._route_selection.get("route_action_id"),
+                "provider_catalog": self._route_selection.get("provider_catalog"),
+                "provider": self.provider,
+                "model": self.model,
+                "profile": self._route_selection.get("profile"),
+                "phase": self._route_selection.get("phase"),
+                "source": source,
+                "retry_count": self._route_selection.get("retry_count", 0),
+                "escalated": source in {
+                    "critical_agent", "risk_escalation", "retry_escalation"
+                },
+                "latency_ms": float(latency_ms),
+                "input_tokens": int(input_tokens),
+                "output_tokens": int(output_tokens),
+                "cost_usd": float(cost_usd) if cost_usd is not None else None,
+                "quality_score": (
+                    float(quality_score) if quality_score is not None else None
+                ),
+                "success": bool(success),
+                "error_type": error_type,
+            }
+            kwargs: dict = {}
+            if self._db_path:
+                kwargs["db_path"] = self._db_path
+            record_route_telemetry(metadata, **kwargs)
+        except Exception as exc:
+            logger.debug("route telemetry failed (non-blocking): %s", exc)

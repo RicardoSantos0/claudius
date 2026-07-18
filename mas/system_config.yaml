@@ -43,8 +43,93 @@ defaults:
 # --- LLM CONFIGURATION ---
 llm:
   provider: "anthropic"
-  master_model: "claude-opus-4-7"       # Master Orchestrator default
-  default_model: "claude-sonnet-4-6"    # All other agents use Sonnet
+  master_model: "claude-fable-5"         # Legacy reasoning fallback
+  default_model: "claude-sonnet-5"       # Legacy standard fallback
+  execution_profiles:
+    reasoning: {provider: "anthropic", model: "claude-fable-5"}
+    standard: {provider: "anthropic", model: "claude-sonnet-5"}
+    economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001"}
+  default_provider_catalog: "anthropic"
+  provider_catalogs:
+    anthropic:
+      adapter: "anthropic"
+      provider: "anthropic"
+      opencode_provider: "anthropic"
+      source_url: "https://platform.claude.com/docs/en/about-claude/models/overview"
+      validated_at: "2026-07-18"
+      lifecycle_state: "active"
+      credential_env: "ANTHROPIC_API_KEY"
+      profiles:
+        reasoning: {provider: "anthropic", model: "claude-fable-5", opencode_model: "claude-fable-5"}
+        standard: {provider: "anthropic", model: "claude-sonnet-5", opencode_model: "claude-sonnet-5"}
+        economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001", opencode_model: "claude-haiku-4-5-20251001"}
+    openai:
+      adapter: "openai"
+      provider: "openai"
+      opencode_provider: "openai"
+      source_url: "https://developers.openai.com/api/docs/models"
+      validated_at: "2026-07-18"
+      lifecycle_state: "active"
+      credential_env: "OPENAI_API_KEY"
+      profiles:
+        reasoning: {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high", opencode_model: "gpt-5.6-sol"}
+        standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium", opencode_model: "gpt-5.6-terra"}
+        economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low", opencode_model: "gpt-5.6-luna"}
+    gemini:
+      adapter: "litellm"
+      provider: "litellm"
+      opencode_provider: "google"
+      source_url: "https://ai.google.dev/gemini-api/docs/models"
+      validated_at: "2026-07-18"
+      lifecycle_state: "active"
+      credential_env: "GEMINI_API_KEY"
+      profiles:
+        reasoning: {provider: "litellm", model: "gemini/gemini-3.5-flash", reasoning_effort: "high", opencode_model: "gemini-3.5-flash"}
+        standard: {provider: "litellm", model: "gemini/gemini-3.5-flash", reasoning_effort: "medium", opencode_model: "gemini-3.5-flash"}
+        economy: {provider: "litellm", model: "gemini/gemini-3.1-flash-lite", opencode_model: "gemini-3.1-flash-lite"}
+  phase_profiles:
+    intake: "reasoning"
+    specification: "reasoning"
+    planning: "reasoning"
+    capability_discovery: "standard"
+    execution: "economy"
+    review: "reasoning"
+    validation: "standard"
+    evaluation: "reasoning"
+    training: "standard"
+    improvement: "economy"
+    closure: "economy"
+    closed: "economy"
+  routing:
+    audit_persistence: "best_effort"
+    catalog_lifecycle:
+      enabled: true
+      max_age_days: 92
+    risk_escalation_levels: ["high", "critical"]
+    retry_escalation_threshold: 1
+    critical_agents: ["reliability_engineer"]
+    critical_agent_profile: "reasoning"
+    risk_escalation_profile: "reasoning"
+    retry_escalation_profile: "standard"
+    manual_enforcement_capability: "recommended"
+  surfaces:
+    generic:
+      adapter: "manual"
+      enforcement_capability: "recommended"
+      profiles: {}
+    codex:
+      adapter: "codex_config"
+      catalog: "openai"
+      enforcement_capability: "recommended"
+      profiles:
+        reasoning: {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high"}
+        standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium"}
+        economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low"}
+    opencode:
+      adapter: "opencode_cli"
+      catalog: "inherit"
+      enforcement_capability: "recommended"
+      profiles: {}
   max_tokens: 4096
   temperature: 0.3
   agent_overrides: {}                   # Per-agent overrides if needed
@@ -55,7 +140,7 @@ trust_tiers:
   # for per-agent tier assignments. This block exists for documentation only.
   T0_core:
     name: "Core"
-    agents: ["master_orchestrator", "scribe_agent"]
+    agents: ["master_orchestrator", "scribe_agent", "hr_agent"]
     can_do: "Full authority within role boundaries"
     cannot_do: "N/A within role"
   T1_established:
@@ -71,7 +156,8 @@ trust_tiers:
       - "devils_advocate"
       - "domain_expert"
       - "efficiency_advisor"
-      - "hr_agent"
+      - "reliability_engineer"
+      - "session_scheduler"
     can_do: "Operate independently within role boundaries"
     cannot_do: "Spawn, change governance, modify other agents"
   T2_supervised:

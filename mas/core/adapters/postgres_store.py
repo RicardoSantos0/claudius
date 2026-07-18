@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 
 def is_postgres_url(db_url: str | None) -> bool:
@@ -51,6 +51,40 @@ def init_db(db_url: str) -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_action ON agent_events(action_type)")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS route_telemetry (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    project_id TEXT,
+                    agent_id TEXT,
+                    route_action_id TEXT,
+                    provider_catalog TEXT,
+                    provider TEXT,
+                    model TEXT,
+                    profile TEXT,
+                    phase TEXT,
+                    source TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    escalated BOOLEAN NOT NULL DEFAULT FALSE,
+                    latency_ms DOUBLE PRECISION,
+                    input_tokens BIGINT,
+                    output_tokens BIGINT,
+                    cost_usd DOUBLE PRECISION,
+                    quality_score DOUBLE PRECISION,
+                    success BOOLEAN NOT NULL DEFAULT FALSE,
+                    error_type TEXT
+                )
+                """
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_catalog_profile "
+                "ON route_telemetry(provider_catalog, profile)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_timestamp "
+                "ON route_telemetry(timestamp)"
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS shared_states (
@@ -108,6 +142,85 @@ def append_event(
             )
         conn.commit()
     return action_id
+
+
+def record_route_telemetry(db_url: str, metadata: Mapping[str, Any]) -> int:
+    """Persist only the fixed route-telemetry metadata columns."""
+    from core.engine.route_telemetry import ROUTE_TELEMETRY_COLUMNS
+
+    init_db(db_url)
+    values = {name: metadata.get(name) for name in ROUTE_TELEMETRY_COLUMNS}
+    values["retry_count"] = max(0, int(values["retry_count"] or 0))
+    values["escalated"] = bool(values["escalated"])
+    values["success"] = bool(values["success"])
+    columns = ", ".join(ROUTE_TELEMETRY_COLUMNS)
+    placeholders = ", ".join("%s" for _ in ROUTE_TELEMETRY_COLUMNS)
+    with connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO route_telemetry (timestamp, {columns}) "
+                f"VALUES (%s, {placeholders}) RETURNING id",
+                (
+                    str(metadata.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                    *(values[name] for name in ROUTE_TELEMETRY_COLUMNS),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return int(row[0])
+
+
+def aggregate_route_telemetry(
+    db_url: str,
+    *,
+    provider_catalog: str | None = None,
+    profile: str | None = None,
+) -> dict[str, int | float | None]:
+    """Aggregate the same privacy-safe route columns exposed by SQLite."""
+    init_db(db_url)
+    clauses: list[str] = []
+    params: list[object] = []
+    if provider_catalog is not None:
+        clauses.append("provider_catalog = %s")
+        params.append(provider_catalog)
+    if profile is not None:
+        clauses.append("profile = %s")
+        params.append(profile)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS route_count,
+                       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)
+                           AS success_count,
+                       AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success_rate,
+                       COALESCE(SUM(retry_count), 0) AS retry_count,
+                       COALESCE(SUM(CASE WHEN escalated THEN 1 ELSE 0 END), 0)
+                           AS escalation_count,
+                       SUM(cost_usd) AS total_cost_usd,
+                       COUNT(cost_usd) AS priced_route_count,
+                       AVG(latency_ms) AS average_latency_ms,
+                       AVG(quality_score) AS average_quality_score,
+                       COUNT(quality_score) AS quality_scored_count
+                FROM route_telemetry
+                {where}
+                """,
+                params,
+            )
+            row = cur.fetchone()
+    return {
+        "route_count": int(row[0]),
+        "success_count": int(row[1]),
+        "success_rate": float(row[2]) if row[2] is not None else None,
+        "retry_count": int(row[3]),
+        "escalation_count": int(row[4]),
+        "total_cost_usd": float(row[5]) if row[5] is not None else None,
+        "priced_route_count": int(row[6]),
+        "average_latency_ms": row[7],
+        "average_quality_score": row[8],
+        "quality_scored_count": int(row[9]),
+    }
 
 
 def query_events(

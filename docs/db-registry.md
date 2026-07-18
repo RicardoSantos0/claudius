@@ -21,6 +21,8 @@ Indexes every agent template under `agents/*.md`.
 | `template_path` | TEXT | Absolute path to the `.md` file |
 | `tools` | TEXT | Comma-separated tool list from frontmatter |
 | `status` | TEXT | `active` or `retired` |
+| `model` | TEXT | Optional legacy explicit override; empty means inherit the routed catalog target |
+| `model_profile` | TEXT | Provider-neutral profile: `auto`, `reasoning`, `standard`, or `economy` |
 | `last_score` | REAL | Most recent evaluator score (0.0–1.0) |
 | `evaluation_count` | INTEGER | Number of evaluation cycles completed |
 | `last_evaluated_at` | TEXT | ISO-8601 timestamp of last evaluation |

@@ -45,7 +45,7 @@ uv run pytest mas/tests/            # Run the full test suite
 | Mode | How | When |
 |------|-----|------|
 | **Claude Code manual orchestration** | Use `uv run mas prompt <project-id> [agent]` plus Claude Code agents / manual wire application | Primary no-API workflow |
-| **`mas run` CLI** | `uv run mas run <project-id>` drives the live loop autonomously | Requires `ANTHROPIC_API_KEY` with credits |
+| **`mas run` CLI** | `uv run mas run <project-id>` drives the live loop autonomously | Requires the selected catalog's credential and adapter extra |
 
 Claude Code is the primary workflow for this environment. The Python engine handles state, handoffs, and governance; Claude Code is the manual agent invoker.
 

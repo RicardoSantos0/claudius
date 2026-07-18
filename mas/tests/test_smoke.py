@@ -24,6 +24,9 @@ def test_package_imports():
     """The installed package imports cleanly via its runtime root (`core.*`)."""
     import core.cli  # noqa: F401
     import core.config  # noqa: F401
+    from core.engine.execution_profile_router import ExecutionProfileRouter  # noqa: F401
+    from core.engine.model_canary import run_provider_canary  # noqa: F401
+    from core.engine.route_telemetry import RouteTelemetryStore  # noqa: F401
     from core.engine.shared_state_manager import SharedStateManager  # noqa: F401
 
 
@@ -35,8 +38,42 @@ def test_cli_version(runner):
 def test_cli_help_lists_core_commands(runner):
     result = runner.invoke(main, ["--help"])
     assert result.exit_code == 0, result.output
-    for cmd in ("init", "status", "prompt", "doctor"):
+    for cmd in (
+        "init",
+        "status",
+        "prompt",
+        "doctor",
+        "model-catalogs",
+        "model-canary",
+        "route-metrics",
+    ):
         assert cmd in result.output
+
+
+def test_public_routing_config_and_agent_metadata_are_provider_neutral():
+    """The curated public release has live-date catalogs and unpinned agents."""
+    from pathlib import Path
+
+    import tomllib
+
+    import yaml
+
+    root = Path(__file__).resolve().parents[2]
+    config = yaml.safe_load((root / "mas" / "system_config.yaml").read_text("utf-8"))
+    catalogs = config["llm"]["provider_catalogs"]
+    assert {"anthropic", "openai", "gemini"} <= set(catalogs)
+    assert "as_of_date" not in config["llm"]["routing"]["catalog_lifecycle"]
+
+    project = tomllib.loads((root / "pyproject.toml").read_text("utf-8"))["project"]
+    extras = project["optional-dependencies"]
+    assert {"openai", "litellm", "providers"} <= set(extras)
+
+    agent_files = [path for path in (root / "agents").glob("*.md") if path.name != "_utilities.md"]
+    assert len(agent_files) == 16
+    for path in agent_files:
+        text = path.read_text("utf-8")
+        assert "model: inherit" in text, path
+        assert "model_profile: auto" in text, path
 
 
 def test_doctor_runs():
@@ -96,6 +133,7 @@ def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
     assert status.exit_code == 0, status.output
     assert SMOKE_ID in status.output
 
-    prompt = runner.invoke(main, ["prompt", SMOKE_ID])
+    with pytest.warns(RuntimeWarning, match="route audit was not persisted"):
+        prompt = runner.invoke(main, ["prompt", SMOKE_ID])
     assert prompt.exit_code == 0, prompt.output
     assert prompt.output.strip()
