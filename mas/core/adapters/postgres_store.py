@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Iterator, Optional
+from typing import Any, Iterator, Mapping, Optional
 
 
 def is_postgres_url(db_url: str | None) -> bool:
@@ -51,6 +51,66 @@ def init_db(db_url: str) -> None:
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_project ON agent_events(project_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_agent ON agent_events(agent_id)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_action ON agent_events(action_type)")
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS route_telemetry (
+                    id BIGSERIAL PRIMARY KEY,
+                    timestamp TEXT NOT NULL,
+                    project_id TEXT,
+                    agent_id TEXT,
+                    route_action_id TEXT,
+                    dispatch_id TEXT,
+                    provider_catalog TEXT,
+                    provider TEXT,
+                    model TEXT,
+                    provider_reported_model TEXT,
+                    provider_request_id TEXT,
+                    profile TEXT,
+                    phase TEXT,
+                    source TEXT,
+                    verification_source TEXT,
+                    stable_prefix_sha256 TEXT,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    escalated BOOLEAN NOT NULL DEFAULT FALSE,
+                    latency_ms DOUBLE PRECISION,
+                    input_tokens BIGINT,
+                    output_tokens BIGINT,
+                    cached_input_tokens BIGINT,
+                    cache_creation_input_tokens BIGINT,
+                    billable_input_tokens BIGINT,
+                    cost_usd DOUBLE PRECISION,
+                    quality_score DOUBLE PRECISION,
+                    success BOOLEAN NOT NULL DEFAULT FALSE,
+                    error_type TEXT
+                )
+                """
+            )
+            for name, sql_type in {
+                "dispatch_id": "TEXT",
+                "provider_reported_model": "TEXT",
+                "provider_request_id": "TEXT",
+                "verification_source": "TEXT",
+                "stable_prefix_sha256": "TEXT",
+                "cached_input_tokens": "BIGINT",
+                "cache_creation_input_tokens": "BIGINT",
+                "billable_input_tokens": "BIGINT",
+            }.items():
+                cur.execute(
+                    f"ALTER TABLE route_telemetry "
+                    f"ADD COLUMN IF NOT EXISTS {name} {sql_type}"
+                )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_catalog_profile "
+                "ON route_telemetry(provider_catalog, profile)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_timestamp "
+                "ON route_telemetry(timestamp)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_stable_prefix "
+                "ON route_telemetry(stable_prefix_sha256)"
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS shared_states (
@@ -108,6 +168,146 @@ def append_event(
             )
         conn.commit()
     return action_id
+
+
+def record_route_telemetry(db_url: str, metadata: Mapping[str, Any]) -> int:
+    """Persist only the fixed route-telemetry metadata columns."""
+    from core.engine.route_telemetry import (
+        ROUTE_TELEMETRY_COLUMNS,
+        sanitize_route_metadata,
+    )
+
+    init_db(db_url)
+    values = sanitize_route_metadata(metadata)
+    columns = ", ".join(ROUTE_TELEMETRY_COLUMNS)
+    placeholders = ", ".join("%s" for _ in ROUTE_TELEMETRY_COLUMNS)
+    with connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"INSERT INTO route_telemetry (timestamp, {columns}) "
+                f"VALUES (%s, {placeholders}) RETURNING id",
+                (
+                    str(metadata.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+                    *(values[name] for name in ROUTE_TELEMETRY_COLUMNS),
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return int(row[0])
+
+
+def aggregate_route_telemetry(
+    db_url: str,
+    *,
+    provider_catalog: str | None = None,
+    profile: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate the same privacy-safe route columns exposed by SQLite."""
+    init_db(db_url)
+    clauses: list[str] = []
+    params: list[object] = []
+    if provider_catalog is not None:
+        clauses.append("provider_catalog = %s")
+        params.append(provider_catalog)
+    if profile is not None:
+        clauses.append("profile = %s")
+        params.append(profile)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with connect(db_url) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) AS route_count,
+                       COALESCE(SUM(CASE WHEN success THEN 1 ELSE 0 END), 0)
+                           AS success_count,
+                       AVG(CASE WHEN success THEN 1.0 ELSE 0.0 END) AS success_rate,
+                       COALESCE(SUM(retry_count), 0) AS retry_count,
+                       COALESCE(SUM(CASE WHEN escalated THEN 1 ELSE 0 END), 0)
+                           AS escalation_count,
+                       SUM(cost_usd) AS total_cost_usd,
+                       COUNT(cost_usd) AS priced_route_count,
+                       AVG(latency_ms) AS average_latency_ms,
+                       AVG(quality_score) AS average_quality_score,
+                       COUNT(quality_score) AS quality_scored_count,
+                       COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN cached_input_tokens ELSE 0 END
+                       ), 0) AS cached_input_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN cache_creation_input_tokens ELSE 0 END
+                       ), 0) AS cache_creation_input_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN billable_input_tokens ELSE 0 END
+                       ), 0) AS billable_input_tokens,
+                       COUNT(CASE
+                           WHEN verification_source = 'provider'
+                            AND cached_input_tokens IS NOT NULL THEN 1 END
+                       ) AS cache_observation_count,
+                       COUNT(CASE
+                           WHEN verification_source = 'provider'
+                            AND cached_input_tokens > 0 THEN 1 END
+                       ) AS cache_hit_count,
+                       COUNT(provider_request_id) AS provider_request_count
+                FROM route_telemetry
+                {where}
+                """,
+                params,
+            )
+            row = cur.fetchone()
+            cur.execute(
+                f"""
+                SELECT stable_prefix_sha256, input_tokens, cached_input_tokens,
+                       cache_creation_input_tokens, billable_input_tokens
+                FROM route_telemetry
+                {where + (' AND ' if where else 'WHERE ')}
+                      verification_source = 'provider'
+                  AND stable_prefix_sha256 IS NOT NULL
+                """,
+                params,
+            )
+            cache_rows = cur.fetchall()
+    from core.engine.route_telemetry import aggregate_cache_economics
+
+    cache_observations = int(row[15])
+    return {
+        "route_count": int(row[0]),
+        "success_count": int(row[1]),
+        "success_rate": float(row[2]) if row[2] is not None else None,
+        "retry_count": int(row[3]),
+        "escalation_count": int(row[4]),
+        "total_cost_usd": float(row[5]) if row[5] is not None else None,
+        "priced_route_count": int(row[6]),
+        "average_latency_ms": row[7],
+        "average_quality_score": row[8],
+        "quality_scored_count": int(row[9]),
+        "total_input_tokens": int(row[10]),
+        "total_output_tokens": int(row[11]),
+        "cached_input_tokens": int(row[12]),
+        "cache_creation_input_tokens": int(row[13]),
+        "billable_input_tokens": int(row[14]),
+        "cache_observation_count": cache_observations,
+        "cache_hit_count": int(row[16]),
+        "cache_hit_rate": (
+            int(row[16]) / cache_observations if cache_observations else None
+        ),
+        "provider_request_count": int(row[17]),
+        "cache_by_stable_prefix": aggregate_cache_economics(
+            [
+                {
+                    "stable_prefix_sha256": cache_row[0],
+                    "input_tokens": cache_row[1],
+                    "cached_input_tokens": cache_row[2],
+                    "cache_creation_input_tokens": cache_row[3],
+                    "billable_input_tokens": cache_row[4],
+                }
+                for cache_row in cache_rows
+            ]
+        ),
+    }
 
 
 def query_events(

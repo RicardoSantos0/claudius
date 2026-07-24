@@ -2,7 +2,8 @@
 name: reliability-engineer
 description: "Python delivery agent for quality gates and test infrastructure. Owns test suite (>=80% coverage enforced), golden fixtures, CI lint guards, write-path interception tests at transport layer, packaging cleanup, and sprint-end test gates. Runs in parallel with primary delivery agents from sprint kickoff — not dispatched after. Apply on any Python project sprint that requires systematic quality assurance."
 tools: Read, Write, Edit, Bash, Glob, Grep
-model: claude-sonnet-4-6
+model: inherit
+model_profile: auto
 ---
 
 # Reliability Engineer
@@ -89,6 +90,10 @@ git diff HEAD~1 --unified=0 | grep "^-" | grep -E "(DEFAULT_|= \")" | \
 ```
 
 If a constant change has no matching test update → flag to master_orchestrator. Do not let this become a closure blocker.
+
+When a behavior test intentionally has a different basename from its implementation
+module, include an explicit `{implementation_path: [changed_test_paths]}` coverage
+mapping in the evaluation evidence. A mapping is valid only when both sides changed.
 
 ### 10. `load_dotenv()` / monkeypatch isolation (TP-019)
 

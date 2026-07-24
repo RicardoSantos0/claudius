@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS agents (
     trust_tier      TEXT,
     status          TEXT    NOT NULL DEFAULT 'active',
     model           TEXT,
+    model_profile   TEXT    NOT NULL DEFAULT 'auto',
     tools           TEXT,    -- JSON array
     domains         TEXT,    -- JSON array
     roles           TEXT,    -- JSON array
@@ -50,11 +51,11 @@ CREATE TABLE IF NOT EXISTS agents (
 UPSERT_AGENT = """
 INSERT INTO agents (
     agent_id, claude_name, file_path, trust_tier, status,
-    model, tools, domains, roles, risk_level,
+    model, model_profile, tools, domains, roles, risk_level,
     can_spawn, can_write_state, human_invocable, synced_at
 ) VALUES (
     :agent_id, :claude_name, :file_path, :trust_tier, :status,
-    :model, :tools, :domains, :roles, :risk_level,
+    :model, :model_profile, :tools, :domains, :roles, :risk_level,
     :can_spawn, :can_write_state, :human_invocable, :synced_at
 )
 ON CONFLICT(agent_id) DO UPDATE SET
@@ -63,6 +64,7 @@ ON CONFLICT(agent_id) DO UPDATE SET
     trust_tier      = excluded.trust_tier,
     status          = excluded.status,
     model           = excluded.model,
+    model_profile   = excluded.model_profile,
     tools           = excluded.tools,
     domains         = excluded.domains,
     roles           = excluded.roles,
@@ -109,6 +111,7 @@ def sync(
             "trust_tier": entry.get("trust_tier", ""),
             "status": entry.get("status", "active"),
             "model": entry.get("model", ""),
+            "model_profile": entry.get("model_profile", "auto"),
             "tools": json.dumps(entry.get("tools", [])),
             "domains": json.dumps(entry.get("domains", [])),
             "roles": json.dumps(entry.get("roles", [])),
@@ -131,6 +134,11 @@ def sync(
     conn.execute("PRAGMA journal_mode=WAL")
     try:
         conn.execute(CREATE_AGENTS_TABLE)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(agents)")}
+        if "model_profile" not in columns:
+            conn.execute(
+                "ALTER TABLE agents ADD COLUMN model_profile TEXT NOT NULL DEFAULT 'auto'"
+            )
         conn.executemany(UPSERT_AGENT, rows)
         conn.commit()
     finally:

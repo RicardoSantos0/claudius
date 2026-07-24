@@ -23,27 +23,27 @@ Usage as library:
     score = engine.score_goal_achievement(success_criteria, task_outcomes)
 
 Usage as CLI:
-    uv run python mas/core/engine/metrics_engine.py score-project --project-id proj-001
-    uv run python mas/core/engine/metrics_engine.py score-agent  --project-id proj-001 --agent-id hr_agent
-    uv run python mas/core/engine/metrics_engine.py report       --project-id proj-001 [--save]
+    uv run python -m core.engine.metrics_engine score-project --project-id proj-001
+    uv run python -m core.engine.metrics_engine score-agent  --project-id proj-001 --agent-id hr_agent
+    uv run python -m core.engine.metrics_engine report       --project-id proj-001 [--save]
 """
 
 import sys
 import json
 import logging
 import argparse
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
+from core.paths import mas_root
 from core.utils.token_counter import TokenCounter
 
 _token_counter = TokenCounter()
 
-from core.paths import mas_root
 ROOT = mas_root()
 
 try:
@@ -901,6 +901,7 @@ class MetricsEngine:
     def score_test_drift_detection(
         self,
         changed_files: list | None = None,
+        coverage_mappings: dict | None = None,
     ) -> MetricResult:
         """Detect implementation changes that lack paired test updates.
 
@@ -936,6 +937,12 @@ class MetricsEngine:
             return p.replace("\\", "/")
 
         files = [_norm(p) for p in files]
+        normalized_mappings: dict[str, list[str]] = {}
+        for impl, mapped_tests in (coverage_mappings or {}).items():
+            values = mapped_tests if isinstance(mapped_tests, list) else [mapped_tests]
+            normalized_mappings[_norm(str(impl))] = [
+                _norm(str(test_path)) for test_path in values if test_path
+            ]
 
         # --- classify ---
         DOC_SUFFIXES = (".md", ".rst", ".txt")
@@ -970,7 +977,12 @@ class MetricsEngine:
                 evidence=f"changed_files={len(files)}, impl_files=0",
                 findings="No implementation files changed — nothing to drift.",
                 exemplary=True,
-                breakdown={"total": len(files), "impl": 0, "tests": len(test_files)},
+                breakdown={
+                    "total": len(files),
+                    "impl": 0,
+                    "tests": len(test_files),
+                    "explicitly_mapped": [],
+                },
             )
 
         def _module_basename(p: str) -> str:
@@ -978,9 +990,18 @@ class MetricsEngine:
 
         paired_count = 0
         unpaired: list[str] = []
+        explicitly_mapped: list[str] = []
+        changed_test_files = set(test_files)
         for impl in impl_files:
             base = _module_basename(impl)
-            if any(base in t for t in test_files):
+            mapping_satisfied = any(
+                mapped_test in changed_test_files
+                for mapped_test in normalized_mappings.get(impl, [])
+            )
+            if mapping_satisfied:
+                paired_count += 1
+                explicitly_mapped.append(impl)
+            elif any(base in t for t in test_files):
                 paired_count += 1
             else:
                 unpaired.append(impl)
@@ -1012,6 +1033,7 @@ class MetricsEngine:
                 "impl_files": impl_files,
                 "test_files": test_files,
                 "paired": paired_count,
+                "explicitly_mapped": explicitly_mapped,
                 "unpaired": unpaired,
             },
         )
@@ -1044,6 +1066,9 @@ class MetricsEngine:
         task_board_data: dict,
     ) -> list:
         """Compute all project-level metrics. Returns list[MetricResult]."""
+        shared_state, task_board_data, _ = _reconcile_evaluation_inputs(
+            shared_state, project_dir, task_board_data
+        )
         pd_data = shared_state.get("project_definition", {})
         wf = shared_state.get("workflow", {})
         decisions = shared_state.get("decisions", {})
@@ -1133,6 +1158,7 @@ class MetricsEngine:
             .get("test_drift_context", {}) or {}
         )
         changed_files = td_ctx.get("changed_files") or []
+        coverage_mappings = td_ctx.get("coverage_mappings") or {}
 
         metrics.extend([
             self.score_scope_adherence(planned, completed, blocked, failed, over_effort),
@@ -1141,7 +1167,7 @@ class MetricsEngine:
             self.score_decision_quality(decision_log),
             self.score_governance_compliance(governance_violations),
             self.score_record_integrity(handoff_history),
-            self.score_test_drift_detection(changed_files),
+            self.score_test_drift_detection(changed_files, coverage_mappings),
         ])
 
         return metrics
@@ -1198,6 +1224,9 @@ class MetricsEngine:
         agents_to_evaluate: list,
     ) -> "EvaluationReport":
         """Produce a full EvaluationReport."""
+        shared_state, task_board_data, _ = _reconcile_evaluation_inputs(
+            shared_state, project_dir, task_board_data
+        )
         now = datetime.now(timezone.utc).isoformat()
         seq = now.replace(":", "").replace("-", "").replace(".", "")[:14]
         report_id = f"eval-{project_id}-{seq}"
@@ -1272,17 +1301,47 @@ class MetricsEngine:
         (per evaluation_policy.yaml → communication_efficiency). Low scores are the
         signal that training_engine turns into communication_waste proposals."""
         wf = shared_state.get("workflow", {}) or {}
-        comm = shared_state.get("communication", {}) or {}
         consultation = shared_state.get("consultation", {}) or {}
         handoff_history = wf.get("handoff_history", []) or []
         phase_count = max(1, len(wf.get("completed_phases", []) or []))
         consultation_responses = consultation.get("consultation_responses", []) or []
         decisions_made = len((shared_state.get("decisions", {}) or {}).get("decision_log", []) or [])
+        prompt_context_counts: list[int] = []
+        total_prompt_estimates = 0
+        project_id = (
+            shared_state.get("core_identity", {}) or {}
+        ).get("project_id")
+        if project_id:
+            try:
+                from core.db import query_events
+
+                rows = query_events(
+                    project_id=project_id,
+                    action_type="prompt_estimated",
+                    limit=100,
+                )
+                for row in rows:
+                    payload = json.loads(row.get("payload") or "{}")
+                    payload = payload.get("params", {}).get("inputs", payload)
+                    components = payload.get("components", {}) or {}
+                    context_tokens = sum(
+                        int(components.get(name, 0) or 0)
+                        for name in ("state", "memory", "skills", "runtime")
+                    )
+                    total = int(payload.get("total_estimated_tokens", 0) or 0)
+                    if total > 0:
+                        prompt_context_counts.append(context_tokens)
+                        total_prompt_estimates += total
+            except Exception:
+                prompt_context_counts = []
+                total_prompt_estimates = 0
 
         metrics = [
             self.score_token_efficiency(handoff_history, phase_count),
             self.score_payload_density(handoff_history),
-            self.score_context_injection_efficiency([], comm.get("total_tokens_used", 0) or 1),
+            self.score_context_injection_efficiency(
+                prompt_context_counts, total_prompt_estimates
+            ),
             self.score_consultation_overhead(consultation_responses, decisions_made),
         ]
         applicable = [m for m in metrics if m.mode != "not_applicable"]
@@ -1365,6 +1424,51 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _reconcile_evaluation_inputs(
+    shared_state: dict,
+    project_dir: Path,
+    task_board_data: dict,
+) -> tuple[dict, dict, dict]:
+    """Reconcile an approved execution plan before any evaluation scoring."""
+    plan_path = project_dir / "planning" / "execution_plan.yaml"
+    if not plan_path.exists():
+        return shared_state, task_board_data, {
+            "milestones_added": [], "tasks_added": [], "progress_preserved": []
+        }
+    with plan_path.open(encoding="utf-8") as handle:
+        plan = yaml.safe_load(handle) or {}
+    from .task_board import reconcile_plan_with_shared_state
+
+    baseline = copy.deepcopy(shared_state)
+    execution = baseline.setdefault("execution", {})
+    for field_name, id_keys in (
+        ("milestones", ("milestone_id", "id")),
+        ("tasks", ("task_id", "id")),
+    ):
+        current = execution.get(field_name, []) or []
+        board_items = (task_board_data or {}).get(field_name, []) or []
+        by_id = {
+            next((item.get(key) for key in id_keys if item.get(key)), None): item
+            for item in current
+            if isinstance(item, dict)
+        }
+        for item in board_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = next((item.get(key) for key in id_keys if item.get(key)), None)
+            if item_id:
+                by_id[item_id] = {**by_id.get(item_id, {}), **item}
+        execution[field_name] = [item for key, item in by_id.items() if key]
+
+    reconciled, report = reconcile_plan_with_shared_state(plan, baseline)
+    execution = reconciled.get("execution", {})
+    board = {
+        "tasks": execution.get("tasks", []),
+        "milestones": execution.get("milestones", []),
+    }
+    return reconciled, board, report
+
+
 def _load_project_data(project_id: str):
     """Load shared state and task board data for a project."""
     from .shared_state_manager import SharedStateManager
@@ -1380,7 +1484,15 @@ def _load_project_data(project_id: str):
     else:
         board_data = {"tasks": [], "milestones": []}
 
-    return state, project_dir, board_data
+    reconciled, board_data, report = _reconcile_evaluation_inputs(
+        state, project_dir, board_data
+    )
+    if reconciled != state:
+        # Evaluation CLI owns this lifecycle gate. Persist the atomically
+        # reconciled document rather than append partial records through ACL.
+        sm._save(reconciled)
+
+    return reconciled, project_dir, board_data
 
 
 def main_cli(args=None) -> int:

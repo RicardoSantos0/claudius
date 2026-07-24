@@ -61,7 +61,9 @@ mode because `mas/projects/` is gitignored; direct pushes still need either a
 mas doctor
 ```
 
-Confirms the runtime environment (DB, templates, API key presence, etc.) is healthy.
+Confirms the runtime environment, SQLite integrity, state/event reconciliation,
+registry capability projection, project layout, templates, and provider
+configuration are healthy.
 
 ## 6. Setup smoke check
 

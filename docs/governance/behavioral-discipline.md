@@ -43,15 +43,18 @@ message only. Direct pushes must include either a `MAS:` marker or an explicit
 
 ## Codex / OpenCode / Copilot Surfaces
 
-All surfaces should use `mas prompt` / `mas ingest`, MCP `mas_prompt` /
-`mas_ingest`, or `mas run`. A surface that edits files directly can still do so
+All surfaces should use `mas prompt` / `mas ingest`, MCP
+`mas_prompt_envelope` / `mas_ingest`, or `mas run`. Legacy `mas_prompt` is for
+prompt-only clients and cannot replace an envelope when receipt verification is
+required. A surface that edits files directly can still do so
 at the operating-system level, but its commit will fail the local evidence gate
 unless the corresponding MAS project exists and is complete.
 
 The expected sequence is:
 
 1. Create or resume a MAS project.
-2. Let MAS select the next agent with `mas prompt <project-id>` or `mas_prompt`.
+2. Let MAS select the next agent with `mas prompt <project-id>` or
+   `mas_prompt_envelope`.
 3. Run that prompt in the chosen surface: Claude Code, Codex, OpenCode, GitHub
    Copilot chat, ChatGPT, Gemini, LM Studio, Ollama, or another model UI.
 4. Feed the response back through `mas ingest` or `mas_ingest`.
@@ -59,5 +62,6 @@ The expected sequence is:
 
 For standard projects, intake should include an accepted `inquirer_agent` handoff
 before implementation proceeds. Manual mode still consumes model tokens, so
-`mas prompt`, `mas ingest`, and `mas log-tokens` feed token evidence into the same
-audit trail used by the commit gate.
+`mas prompt` feeds non-billable preview evidence, `mas ingest` records the
+observed manual response, and `mas log-tokens` adds exact provider/cache evidence
+to the same audit trail used by the commit gate.

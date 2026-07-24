@@ -30,7 +30,7 @@ principles:
 # ---------------------------------------------------------------------------
 field_map:
   # Payload fields
-  summary:                      s
+  summary:                      sum
   artifacts_produced:           art
   decisions_made:               dec
   open_questions:               oq
@@ -41,7 +41,7 @@ field_map:
   recommendation:               rec
   key_concerns:                 kc
   reasoning:                    rsn
-  status:                       st
+  status:                       s
   action:                       act
   path:                         path
   data:                         d
@@ -84,6 +84,7 @@ status_codes:
   # Project Manager
   exec_plan:ready:            "Execution plan compiled"
   milestone:complete:         "Milestone — all tasks completed"
+  task:delegated:             "Task delegated to another agent"
   task:complete:              "Task completed successfully"
   task:blocked:               "Task blocked — dependency or resource issue"
   task:failed:                "Task failed — requires intervention"
@@ -247,4 +248,9 @@ backward_compatibility:
   legacy_format: "expanded — no _v field, full field names"
   detection: "absence of _v field indicates legacy format"
   handling: "decode() and expand() accept both formats transparently"
-  existing_tests: "use expand() — all 1013+ tests unaffected"
+  handoff_normalization:
+    behavior: "HandoffEngine adds _v and s to legacy/manual payloads before persistence and scoring"
+    default_status: "task:delegated for master-to-worker; task:complete for worker-to-master"
+    precedence: "explicit s, expanded status, inferred default"
+    preservation: "expanded payload fields are retained; normalization is idempotent"
+  existing_tests: "use expand() — the regression suite remains compatible"

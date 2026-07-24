@@ -5,6 +5,8 @@ Each agent receives ONLY the shared state fields it is authorized to read.
 This prevents attention pollution and enforces information boundaries.
 """
 
+import hashlib
+import json
 import re
 import logging
 from pathlib import Path
@@ -206,6 +208,10 @@ class PromptAssembler:
 
     def __init__(self, agents_dir: Path = AGENTS_DIR):
         self.agents_dir = agents_dir
+        # Safe defaults for callers/tests that replace ``assemble`` while still
+        # consuming the provider-neutral envelope.
+        self.last_token_count = 0
+        self.last_prompt_metadata: dict[str, Any] = {}
 
     def _db_template_path(self, agent_id: str) -> str | None:
         """Query mas_agents for template_path. Returns None on any error or miss."""
@@ -372,6 +378,7 @@ class PromptAssembler:
         """
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
         template = self.load_template(canonical_agent_id)
+        stable_prefix = template.rstrip()
         projected = _project_state(state, canonical_agent_id)
         compact = _compact_projection(projected)
 
@@ -380,6 +387,12 @@ class PromptAssembler:
                                allow_unicode=True, sort_keys=False)
         if estimate_tokens(state_yaml) > _COMPRESSION_TOKEN_THRESHOLD:
             compact = compress(compact, mode="summary")
+            state_yaml = yaml.dump(
+                compact,
+                default_flow_style=False,
+                allow_unicode=True,
+                sort_keys=False,
+            )
 
         # Wire protocol instruction (agent-to-agent outputs only; never for human-facing)
         # Inquirer is excluded — its output is natural language for humans.
@@ -397,8 +410,7 @@ class PromptAssembler:
         context = {
             "injected_project_id": state.get("core_identity", {}).get("project_id", ""),
             "injected_current_phase": state.get("core_identity", {}).get("current_phase", ""),
-            "injected_shared_state": yaml.dump(compact, default_flow_style=False,
-                                               allow_unicode=True, sort_keys=False),
+            "injected_shared_state": state_yaml,
             "injected_wire_instruction": _WIRE_INSTRUCTION,
         }
 
@@ -452,8 +464,8 @@ class PromptAssembler:
         # Phase is passed as the semantic search query: finds relevant past events
         # from the same phase across projects, not just the most recent ones.
         project_id = state.get("core_identity", {}).get("project_id", "")
-        phase = state.get("core_identity", {}).get("current_phase", "")
-        sqlite_ctx = self._sqlite_context(project_id, phase=phase)
+        memory_query = self._memory_query(state)
+        sqlite_ctx = self._sqlite_context(project_id, query=memory_query)
         if sqlite_ctx:
             context["injected_recent_events"] = sqlite_ctx
 
@@ -469,41 +481,147 @@ class PromptAssembler:
                 context.get("injected_recommended_skill_use")):
             prompt = f"{prompt.rstrip()}\n\n{context['injected_recommended_skill_use']}\n"
         self.last_token_count: int = _token_counter.count(prompt)
+        skill_text = self._build_skill_access_block(
+            canonical_agent_id, authorized_skills
+        )
+        skill_text += context.get("injected_recommended_skill_use", "")
+        memory_text = "\n".join(
+            part for part in (graph_context, sqlite_ctx) if part
+        )
+        runtime_text = "\n".join(
+            part
+            for part in (
+                context.get("injected_project_id", ""),
+                context.get("injected_current_phase", ""),
+                context.get("injected_wire_instruction", ""),
+            )
+            if part
+        )
+        components = {
+            "static_prefix": _token_counter.count(stable_prefix),
+            "state": _token_counter.count(state_yaml),
+            "memory": _token_counter.count(memory_text),
+            "skills": _token_counter.count(skill_text),
+            "runtime": _token_counter.count(runtime_text),
+        }
+        components["unclassified"] = max(
+            0, self.last_token_count - sum(components.values())
+        )
+        self.last_prompt_metadata: dict[str, Any] = {
+            "schema_version": "1.0",
+            "measurement": "heuristic_estimate",
+            "billable": False,
+            "cache_ready": True,
+            "total_estimated_tokens": self.last_token_count,
+            "components": components,
+            "stable_prefix": {
+                "sha256": hashlib.sha256(
+                    stable_prefix.encode("utf-8")
+                ).hexdigest(),
+                "characters": len(stable_prefix),
+                "estimated_tokens": components["static_prefix"],
+            },
+            "memory_query": memory_query,
+        }
         return prompt
 
-    def _sqlite_context(self, project_id: str, phase: str = "") -> str:
+    @staticmethod
+    def _memory_query(state: dict) -> str:
+        """Build a bounded, project-specific FTS query for episodic recall."""
+        ci = state.get("core_identity", {}) or {}
+        definition = state.get("project_definition", {}) or {}
+        raw = " ".join(
+            str(value or "")
+            for value in (
+                ci.get("current_phase"),
+                definition.get("target_area"),
+                definition.get("project_goal"),
+            )
+        )
+        stop = {
+            "and", "the", "for", "with", "from", "into", "that", "this",
+            "project", "current", "phase", "without",
+        }
+        terms: list[str] = []
+        for token in re.findall(r"[A-Za-z0-9_-]{3,}", raw.lower()):
+            if token in stop or token in terms:
+                continue
+            terms.append(token)
+            if len(terms) >= 8:
+                break
+        return " OR ".join(terms)
+
+    @staticmethod
+    def _dedupe_memory_events(
+        events: list[dict], *, cross_project: bool = False
+    ) -> list[dict]:
+        """Remove generic cross-project phase noise and repeated event summaries."""
+        filtered: list[dict] = []
+        seen: set[tuple[str, str]] = set()
+        for event in events:
+            action = str(event.get("action_type") or "")
+            intent = str(event.get("intent") or "").strip()
+            if cross_project and action == "phase_transition":
+                try:
+                    payload = json.loads(event.get("payload") or "{}")
+                except Exception:
+                    payload = {}
+                payload = payload.get("params", {}).get("inputs", payload)
+                if payload.get("reconciled") or intent.lower().startswith(
+                    "phase completed:"
+                ):
+                    continue
+            signature = (action, intent.lower())
+            if signature in seen:
+                continue
+            seen.add(signature)
+            filtered.append(event)
+            if len(filtered) >= 3:
+                break
+        return filtered
+
+    def _sqlite_context(
+        self,
+        project_id: str,
+        query: str = "",
+        *,
+        phase: str | None = None,
+    ) -> str:
         """
         Query relevant agent events from SQLite for prompt injection.
 
-        Strategy (D3/AC3):
-          1. If a phase context is provided, try semantic search scoped to this project.
-             If ≥ 2 semantically relevant results found, use those.
-          2. Cross-project fallback: if < 2 local hits, search across ALL projects
-             (project_id=None) — gives agents genuine cross-project context.
-          3. Final fallback: 5 most recent events for this project (chronological).
+        Strategy:
+          1. Search locally with phase + project goal/target terms.
+          2. Add recent local events when semantic recall is sparse.
+          3. Use at most three deduplicated cross-project results, excluding generic
+             reconciled phase-transition noise.
 
         Returns a compact formatted string, or "" if no events or DB unavailable.
         Never raises — all errors are swallowed to protect prompt assembly.
         """
+        # ``phase`` is the legacy public keyword. Keep it as a compatibility
+        # alias while new callers pass the richer bounded query.
+        if phase is not None and not query:
+            query = phase
         if not project_id:
             return ""
         try:
             from core.db import semantic_search, query_project_history, format_events_for_prompt
-            events: list[dict] = []
-            if phase:
-                # Step 1: scoped search
-                events = semantic_search(phase, project_id=project_id, limit=5)
-                if len(events) < 2:
-                    # Step 2: cross-project fallback (D3)
-                    cross = semantic_search(phase, project_id=None, limit=5)
-                    # Prefer cross-project hits from other projects only
-                    other = [e for e in cross if e.get("project_id") != project_id]
-                    if len(other) >= 2:
-                        events = other
-            if len(events) < 2:
-                # Step 3: recent history fallback
-                events = query_project_history(project_id, limit=5)
-            return format_events_for_prompt(events)
+            local = (
+                semantic_search(query, project_id=project_id, limit=5)
+                if query
+                else []
+            )
+            recent = query_project_history(project_id, limit=5)
+            events = self._dedupe_memory_events([*local, *recent])
+            if len(events) < 2 and query:
+                cross = semantic_search(query, project_id=None, limit=8)
+                other = [e for e in cross if e.get("project_id") != project_id]
+                events.extend(
+                    self._dedupe_memory_events(other, cross_project=True)
+                )
+                events = self._dedupe_memory_events(events)
+            return format_events_for_prompt(events[:3])
         except Exception:
             return ""
 
