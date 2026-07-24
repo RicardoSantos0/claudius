@@ -8,6 +8,7 @@ standard, economy); this module resolves the configured provider and model.
 from __future__ import annotations
 
 import os
+import uuid
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -45,6 +46,12 @@ class RouteSelection:
     reasoning_effort: str | None
     launch_args: list[str]
     provider_catalog: str | None
+    dispatch_id: str
+    candidates: list[dict[str, Any]]
+    selected_candidate_index: int
+    selection_status: str
+    enforcement_status: str
+    verification_required: bool
     legacy_fallback: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -87,6 +94,8 @@ class ExecutionProfileRouter:
         enforcement_capability: str | None = None,
         surface: str | None = None,
         provider_catalog: str | None = None,
+        available_models: list[str] | tuple[str, ...] | set[str] | None = None,
+        excluded_models: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> RouteSelection:
         self._audit_persistence_policy()
         if bool(explicit_provider) != bool(explicit_model):
@@ -156,6 +165,18 @@ class ExecutionProfileRouter:
         configured_surface_catalog = surface_cfg.get("catalog")
         if configured_surface_catalog == "inherit":
             configured_surface_catalog = None
+        if (
+            surface_name == "local"
+            and not (provider_override and model_override)
+            and not provider_catalog
+            and not surface_catalog_env
+            and not os.getenv("MAS_MODEL_CATALOG")
+            and not configured_surface_catalog
+        ):
+            raise RouteConfigurationError(
+                "local surface requires an explicit provider/model pair or provider "
+                "catalog; refusing to inherit the default cloud route"
+            )
         env_provider_catalog = os.getenv("MAS_PROVIDER")
         if env_provider_catalog not in catalogs:
             env_provider_catalog = None
@@ -243,7 +264,21 @@ class ExecutionProfileRouter:
                 surface_cfg.get("enforcement_capability")
                 or self.manual_enforcement_capability
             )
-        enforced = capability in {"enforced", "engine_enforced", "client_enforced"}
+        # A manual client capability is a promise that the client *can* apply
+        # the route, not evidence that it already did. Only the autonomous
+        # engine owns the provider call at selection time.
+        enforced = surface is None and capability in {
+            "enforced", "engine_enforced", "client_enforced"
+        }
+        enforcement_status = (
+            "engine_will_enforce"
+            if enforced
+            else "awaiting_client_application"
+            if capability in {
+                "client_selectable", "client_enforced", "enforced", "engine_enforced"
+            }
+            else "advisory_only"
+        )
         adapter = str(
             surface_cfg.get("adapter")
             or catalog_cfg.get("adapter")
@@ -275,6 +310,52 @@ class ExecutionProfileRouter:
         if surface_name == "opencode" and not launch_args:
             selector = model if "/" in model else f"{provider}/{model}"
             launch_args = ["-m", selector]
+
+        candidates = self._candidate_chain(
+            provider=provider,
+            model=model,
+            profile_target=profile_target,
+            catalog_cfg=catalog_cfg,
+            surface=surface_name,
+            exact_model=bool(model_override),
+            reasoning_effort=(
+                str(reasoning_effort) if reasoning_effort else None
+            ),
+        )
+        available = self._model_constraint(
+            available_models, env_name="MAS_AVAILABLE_MODELS"
+        )
+        excluded = self._model_constraint(
+            excluded_models, env_name="MAS_EXCLUDED_MODELS"
+        )
+        selected_index, rejection = self._select_candidate(
+            candidates, available=available, excluded=excluded
+        )
+        if selected_index is None:
+            details = "; ".join(rejection) or "all candidates were rejected"
+            raise RouteConfigurationError(
+                f"no approved model candidate for {agent_id}/{profile}: {details}"
+            )
+        if selected_index:
+            selected = candidates[selected_index]
+            provider = str(selected["provider"])
+            model = str(selected["model"])
+            reasoning_effort = selected.get("reasoning_effort")
+            source = "availability_fallback"
+            reason = (
+                f"primary model {rejection[0]}; selected approved fallback "
+                f"{provider}/{model}"
+            )
+            if surface_name == "opencode":
+                selector = model if "/" in model else f"{provider}/{model}"
+                launch_args = ["-m", selector]
+        selection_status = (
+            "selected_primary" if selected_index == 0 else "selected_fallback"
+        )
+        verification_required = bool(
+            surface is not None
+            and profile in set(self.routing.get("receipt_required_profiles", []) or [])
+        )
         return RouteSelection(
             agent_id=agent_id,
             phase=phase,
@@ -292,6 +373,12 @@ class ExecutionProfileRouter:
             reasoning_effort=(str(reasoning_effort) if reasoning_effort else None),
             launch_args=launch_args,
             provider_catalog=(catalog_name or None),
+            dispatch_id=str(uuid.uuid4()),
+            candidates=candidates,
+            selected_candidate_index=selected_index,
+            selection_status=selection_status,
+            enforcement_status=enforcement_status,
+            verification_required=verification_required,
             legacy_fallback=legacy_fallback,
         )
 
@@ -303,14 +390,32 @@ class ExecutionProfileRouter:
         phase: str,
         prompt: str,
         selection: RouteSelection,
+        prompt_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return {
+        envelope = {
             "schema_version": "1.0",
             "kind": "mas_manual_execution",
             "project_id": project_id,
             "agent_id": agent_id,
             "phase": phase,
             "routing": selection.to_dict(),
+            "dispatch": {
+                "dispatch_id": selection.dispatch_id,
+                "status": "selected",
+                "selection_status": selection.selection_status,
+                "verification_required": selection.verification_required,
+                "receipt_status": "pending" if selection.verification_required else "optional",
+                "accepted_models": [
+                    str(candidate["model"]) for candidate in selection.candidates
+                ],
+                "accepted_routes": [
+                    {
+                        "provider": candidate["provider"],
+                        "model": candidate["model"],
+                    }
+                    for candidate in selection.candidates
+                ],
+            },
             "enforcement": {
                 "capability": selection.enforcement_capability,
                 "enforced": selection.enforced,
@@ -323,17 +428,27 @@ class ExecutionProfileRouter:
                 "instruction": (
                     "Use the requested provider/model for this execution."
                     if selection.enforced
-                    else "Advisory only: this manual surface cannot enforce provider/model selection."
+                    else (
+                        "Apply the requested provider/model and return an execution "
+                        "receipt containing dispatch_id, provider, and actual model."
+                        if selection.enforcement_status
+                        == "awaiting_client_application"
+                        else "Advisory only: actual provider/model remains unverified."
+                    )
                 ),
             },
             "prompt": prompt,
         }
+        if prompt_metadata:
+            envelope["prompt_metadata"] = prompt_metadata
+        return envelope
 
     def record_route_selection(self, project_id: str, selection: RouteSelection) -> str:
         """Record routing provenance with the existing decision event convention."""
         if not project_id:
             return ""
         policy = self._audit_persistence_policy()
+        required = policy == "required" or selection.verification_required
         try:
             from core.engine.event_recorder import EventRecorder
 
@@ -350,7 +465,7 @@ class ExecutionProfileRouter:
             )
             if action_id:
                 return action_id
-            if policy == "required":
+            if required:
                 raise RouteAuditPersistenceError(
                     "required route audit persistence failed: event was not persisted"
                 )
@@ -362,7 +477,7 @@ class ExecutionProfileRouter:
         except RouteAuditPersistenceError:
             raise
         except Exception as exc:
-            if policy == "required":
+            if required:
                 raise RouteAuditPersistenceError(
                     f"required route audit persistence failed: {type(exc).__name__}"
                 ) from exc
@@ -373,6 +488,125 @@ class ExecutionProfileRouter:
             )
             return ""
         return ""
+
+    def _candidate_chain(
+        self,
+        *,
+        provider: str,
+        model: str,
+        profile_target: dict[str, Any] | None,
+        catalog_cfg: dict[str, Any],
+        surface: str,
+        exact_model: bool,
+        reasoning_effort: str | None,
+    ) -> list[dict[str, Any]]:
+        """Return an ordered, surface-ready chain of approved model routes."""
+        raw_fallbacks = (
+            []
+            if exact_model or not isinstance(profile_target, dict)
+            else list(profile_target.get("fallbacks", []) or [])
+        )
+        raw_candidates: list[dict[str, Any]] = [
+            {
+                "provider": provider,
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "fallback_on": (
+                    list(raw_fallbacks[0].get("on", []) or [])
+                    if raw_fallbacks and isinstance(raw_fallbacks[0], dict)
+                    else []
+                ),
+            }
+        ]
+        for index, raw in enumerate(raw_fallbacks):
+            if isinstance(raw, str):
+                item: dict[str, Any] = {"model": raw}
+            elif isinstance(raw, dict):
+                item = dict(raw)
+            else:
+                raise RouteConfigurationError(
+                    "model fallback entries must be strings or mappings"
+                )
+            next_raw = (
+                raw_fallbacks[index + 1]
+                if index + 1 < len(raw_fallbacks)
+                else None
+            )
+            candidate = {
+                "provider": str(item.get("provider") or provider),
+                "model": str(item.get("model") or ""),
+                "reasoning_effort": item.get("reasoning_effort"),
+                "fallback_on": (
+                    list(next_raw.get("on", []) or [])
+                    if isinstance(next_raw, dict)
+                    else []
+                ),
+            }
+            if not candidate["model"]:
+                raise RouteConfigurationError("model fallback is missing model")
+            if surface == "opencode":
+                candidate["provider"] = str(
+                    item.get("opencode_provider")
+                    or item.get("surface_provider")
+                    or catalog_cfg.get("opencode_provider")
+                    or candidate["provider"]
+                )
+                candidate["model"] = str(
+                    item.get("opencode_model")
+                    or item.get("surface_model")
+                    or candidate["model"]
+                )
+            raw_candidates.append(candidate)
+        return raw_candidates
+
+    @staticmethod
+    def _model_constraint(
+        values: list[str] | tuple[str, ...] | set[str] | None,
+        *,
+        env_name: str,
+    ) -> set[str] | None:
+        if values is None:
+            raw = os.getenv(env_name)
+            if raw is None or not raw.strip():
+                return None
+            values = raw.split(",")
+        return {str(value).strip().lower() for value in values if str(value).strip()}
+
+    @staticmethod
+    def _select_candidate(
+        candidates: list[dict[str, Any]],
+        *,
+        available: set[str] | None,
+        excluded: set[str] | None,
+    ) -> tuple[int | None, list[str]]:
+        rejections: list[str] = []
+        for index, candidate in enumerate(candidates):
+            provider = str(candidate["provider"])
+            model = str(candidate["model"])
+            identifiers = {model.lower(), f"{provider}/{model}".lower()}
+            if excluded and identifiers & excluded:
+                rejections.append(f"{provider}/{model} is excluded by the active plan")
+                continue
+            if available is not None and not identifiers & available:
+                rejections.append(
+                    f"{provider}/{model} is unavailable in the active client/plan"
+                )
+                continue
+            return index, rejections
+        return None, rejections
+
+    @staticmethod
+    def should_fallback(
+        candidate: dict[str, Any],
+        result: dict[str, Any],
+    ) -> bool:
+        """Allow fallback only for failure classes approved by the route."""
+        error_type = str(result.get("error_type") or "").strip().lower()
+        allowed = {
+            str(value).strip().lower()
+            for value in candidate.get("fallback_on", []) or []
+        }
+        return bool(result.get("error") and error_type and error_type in allowed)
 
     def _audit_persistence_policy(self) -> str:
         policy = str(self.routing.get("audit_persistence", "best_effort"))
@@ -559,6 +793,7 @@ def build_manual_envelope(
     phase: str,
     prompt: str,
     selection: RouteSelection,
+    prompt_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the shared CLI/MCP manual execution envelope contract."""
     return ExecutionProfileRouter().build_manual_envelope(
@@ -567,4 +802,5 @@ def build_manual_envelope(
         phase=phase,
         prompt=prompt,
         selection=selection,
+        prompt_metadata=prompt_metadata,
     )

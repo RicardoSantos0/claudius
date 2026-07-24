@@ -162,7 +162,20 @@ def mas_prompt(project_id: str, agent_id: str = "") -> str:
     else:
         aid = OrchestrationLoop(LoopConfig(project_id=project_id))._determine_next_agent(state)
     agents_dir = mas_root().parent / "agents"
-    return PromptAssembler(agents_dir=agents_dir).assemble(aid, state)
+    assembler = PromptAssembler(agents_dir=agents_dir)
+    prompt_text = assembler.assemble(aid, state)
+    try:
+        from core.db import record_prompt_estimate
+        record_prompt_estimate(
+            project_id,
+            aid,
+            assembler.last_token_count,
+            metadata=assembler.last_prompt_metadata,
+            note=f"MCP prompt preview assembled for {aid}",
+        )
+    except Exception:
+        pass
+    return prompt_text
 
 
 @mcp.tool()
@@ -177,6 +190,8 @@ def mas_prompt_envelope(
     enforcement_capability: str = "",
     surface: str = "generic",
     provider_catalog: str = "",
+    available_models: str = "",
+    excluded_models: str = "",
 ) -> str:
     """Return a structured provider-neutral manual execution envelope as YAML."""
     from core.engine.agent_ids import normalize_agent_id
@@ -195,7 +210,8 @@ def mas_prompt_envelope(
         else OrchestrationLoop(LoopConfig(project_id=project_id))._determine_next_agent(state)
     )
     phase = state.get("core_identity", {}).get("current_phase", "")
-    prompt_text = PromptAssembler(agents_dir=mas_root().parent / "agents").assemble(aid, state)
+    assembler = PromptAssembler(agents_dir=mas_root().parent / "agents")
+    prompt_text = assembler.assemble(aid, state)
     router = ExecutionProfileRouter()
     selection = router.resolve(
         aid,
@@ -214,9 +230,37 @@ def mas_prompt_envelope(
         ),
         surface=surface,
         provider_catalog=provider_catalog or None,
+        available_models=(
+            [value.strip() for value in available_models.split(",") if value.strip()]
+            or None
+        ),
+        excluded_models=(
+            [value.strip() for value in excluded_models.split(",") if value.strip()]
+            or None
+        ),
     )
     router.record_route_selection(project_id, selection)
-    return _yaml(build_manual_envelope(project_id, aid, phase, prompt_text, selection))
+    try:
+        from core.db import record_prompt_estimate
+        record_prompt_estimate(
+            project_id,
+            aid,
+            assembler.last_token_count,
+            metadata=assembler.last_prompt_metadata,
+            note=f"MCP prompt-envelope preview assembled for {aid}",
+        )
+    except Exception:
+        pass
+    return _yaml(
+        build_manual_envelope(
+            project_id,
+            aid,
+            phase,
+            prompt_text,
+            selection,
+            prompt_metadata=assembler.last_prompt_metadata,
+        )
+    )
 
 
 @mcp.tool()
@@ -344,14 +388,35 @@ def mas_snapshot(project_id: str, phase: str = "") -> str:
 
 
 @mcp.tool()
-def mas_ingest(project_id: str, response: str, agent_id: str = "") -> str:
+def mas_ingest(
+    project_id: str,
+    response: str,
+    agent_id: str = "",
+    dispatch_id: str = "",
+    reported_provider: str = "",
+    reported_model: str = "",
+    verification_source: str = "client",
+) -> str:
     """Apply an LLM response (from ANY provider) to governed state — the manual loop.
 
     Parses the wire block, records an accepted handoff, then advances/delegates/etc.
     Returns the structured outcome (phase_before/after, action, handoff_id, ...).
     """
     from core.engine.manual_loop import apply_ingest
-    res = apply_ingest(project_id, response, agent_id or None)
+    receipt = None
+    if dispatch_id or reported_provider or reported_model:
+        receipt = {
+            "dispatch_id": dispatch_id,
+            "reported_provider": reported_provider,
+            "reported_model": reported_model,
+            "verification_source": verification_source,
+        }
+    res = apply_ingest(
+        project_id,
+        response,
+        agent_id or None,
+        dispatch_receipt=receipt,
+    )
     return _yaml(dataclasses.asdict(res))
 
 

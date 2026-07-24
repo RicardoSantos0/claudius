@@ -72,6 +72,44 @@ _NON_RETRYABLE = (
 )
 
 
+def _classify_error(error: object) -> str:
+    """Map provider-specific prose to the small dispatch failure taxonomy."""
+    value = str(error or "").strip().lower()
+    if "refusal" in value or "refused" in value:
+        return "refusal"
+    model_markers = (
+        "model",
+        "deployment",
+    )
+    unavailable_markers = (
+        "not available",
+        "unavailable",
+        "not found",
+        "does not exist",
+        "not allowed",
+        "no access",
+        "not part of",
+        "unsupported",
+    )
+    if any(marker in value for marker in model_markers) and any(
+        marker in value for marker in unavailable_markers
+    ):
+        return "model_unavailable"
+    if "rate_limit" in value or "rate limit" in value or "429" in value:
+        return "rate_limited"
+    if any(
+        marker in value
+        for marker in ("timeout", "timed out", "overloaded", "503", "502", "500")
+    ):
+        return "transient"
+    if any(
+        marker in value
+        for marker in ("authentication_error", "permission_error", "credit balance")
+    ):
+        return "provider_authorization"
+    return "provider_error"
+
+
 def _resolve_provider() -> str:
     """Provider from env (MAS_PROVIDER), else the historical default 'anthropic'."""
     return (os.getenv("MAS_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
@@ -143,6 +181,15 @@ class _AnthropicAdapter(ProviderAdapter):
             kwargs["system"] = system_prompt
         try:
             msg = client.messages.create(**kwargs)
+            if str(getattr(msg, "stop_reason", "") or "").lower() == "refusal":
+                return {
+                    "text": "",
+                    "tokens_used": 0,
+                    "model": model,
+                    "provider": "anthropic",
+                    "error": "provider returned refusal stop reason",
+                    "error_type": "refusal",
+                }
             text = msg.content[0].text if msg.content else ""
             tp = msg.usage.input_tokens or 0
             tc = msg.usage.output_tokens or 0
@@ -156,7 +203,8 @@ class _AnthropicAdapter(ProviderAdapter):
             }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": "anthropic", "error": str(exc)}
+                    "provider": "anthropic", "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 class _OpenAIAdapter(ProviderAdapter):
@@ -208,7 +256,8 @@ class _OpenAIAdapter(ProviderAdapter):
             }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": self.name, "error": str(exc)}
+                    "provider": self.name, "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 class _LiteLLMAdapter(ProviderAdapter):
@@ -256,7 +305,8 @@ class _LiteLLMAdapter(ProviderAdapter):
             }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": "litellm", "error": str(exc)}
+                    "provider": "litellm", "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 register_adapter(_AnthropicAdapter())
@@ -329,13 +379,17 @@ class AgentRunner:
         if self._adapter is None:
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": f"unsupported_provider: {self.provider}", "retryable": False,
+                "error": f"unsupported_provider: {self.provider}",
+                "error_type": "unsupported_provider",
+                "retryable": False,
             }
 
         if not self.available:
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": self._unavailable_msg(), "retryable": False,
+                "error": self._unavailable_msg(),
+                "error_type": "provider_unavailable",
+                "retryable": False,
             }
 
         started = time.perf_counter()
@@ -358,18 +412,64 @@ class AgentRunner:
 
         if result.get("error"):
             error_str = result["error"]
-            retryable = not any(m in error_str.lower() for m in _NON_RETRYABLE)
+            error_type = str(
+                result.get("error_type") or _classify_error(error_str)
+            )
+            retryable = (
+                error_type in {"rate_limited", "transient", "provider_error"}
+                and not any(m in error_str.lower() for m in _NON_RETRYABLE)
+            )
             self._record_route_telemetry(
                 project_id=project_id,
                 agent_id=agent_id,
                 latency_ms=latency_ms,
                 success=False,
-                error_type="provider_error",
+                error_type=error_type,
             )
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": error_str, "retryable": retryable,
+                "error": error_str,
+                "error_type": error_type,
+                "retryable": retryable,
             }
+
+        reported_model = result.get("reported_model")
+        reported_provider = str(result.get("provider") or self.provider)
+        approved_candidates = self._route_selection.get("candidates", []) or []
+        if reported_model and approved_candidates:
+            approved_routes = {
+                (
+                    str(candidate.get("provider") or "").lower(),
+                    str(candidate.get("model") or "").lower(),
+                )
+                for candidate in approved_candidates
+                if isinstance(candidate, dict)
+            }
+            reported_route = (
+                reported_provider.lower(),
+                str(reported_model).lower(),
+            )
+            if reported_route not in approved_routes:
+                self._record_route_telemetry(
+                    project_id=project_id,
+                    agent_id=agent_id,
+                    latency_ms=latency_ms,
+                    success=False,
+                    error_type="model_mismatch",
+                )
+                return {
+                    "text": "",
+                    "tokens_used": 0,
+                    "model": self.model,
+                    "reported_model": reported_model,
+                    "error": (
+                        "provider-reported route is outside approved dispatch "
+                        f"candidates: {reported_provider}/{reported_model}"
+                    ),
+                    "error_type": "model_mismatch",
+                    "retryable": False,
+                    "verification_status": "mismatch",
+                }
 
         tp = int(result.get("tokens_prompt", 0) or 0)
         tc = int(result.get("tokens_completion", 0) or 0)
@@ -392,7 +492,10 @@ class AgentRunner:
             "text": result.get("text", ""),
             "tokens_used": result.get("tokens_used", 0),
             "model": result.get("model") or self.model,
-            "reported_model": result.get("reported_model"),
+            "reported_model": reported_model,
+            "verification_status": (
+                "provider_reported" if reported_model else "unverified"
+            ),
         }
 
     # ------------------------------------------------------------------

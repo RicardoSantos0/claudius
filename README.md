@@ -347,10 +347,12 @@ intake → execution → closed
 Lite mode skips specification, planning, capability discovery, consultation, and review.
 `mas status` shows `[lite]` next to the phase. Spawn is blocked in lite projects.
 
-Each standard phase transition requires:
-1. Exit criteria verification by Master
-2. Shared state snapshot
-3. Phase recording in state
+Each standard phase transition is guarded by the shared lifecycle harness:
+
+1. The current phase's required artifact contract must pass.
+2. Entry to standard-mode execution also requires a populated canonical task board.
+3. A valid transition snapshots the departing phase, updates shared state, and emits
+   one typed `phase_transition` event.
 
 **Project IDs** follow the format: `proj-{YYYYMMDD}-{NNN}-{slug}` (e.g., `proj-YYYYMMDD-NNN-session-scheduler`). Each project gets a standardized folder structure created by Scribe.
 
@@ -483,27 +485,48 @@ The runtime uses a SQL event store:
 - Every live `agent_runner` call writes a row
 - SQLite uses FTS5 locally; PostgreSQL uses a simple SQL text match until a richer search backend is configured
 - `core.db.semantic_search(query, project_id)` — SQL-backed event search
-- `core.db.query_token_usage(project_id)` — sums `tokens_prompt/completion/total`
-- `prompt_assembler` injects the 5 most relevant past events into every agent prompt
-  (uses semantic search with current phase as query; falls back to recent-5 if < 2 hits)
+- `core.db.query_token_usage(project_id)` — separates observed calls from non-billable
+  prompt previews and exposes provider-reported cache counters when available
+- `prompt_assembler` injects at most 3 deduplicated, project-relevant past events
+  using the phase, target area, and project goal; generic transition noise is excluded
+- `mas sync --dry-run` reports file-to-event projection debt; deterministic event keys
+  make repeated reconciliation a no-op
+- `mas doctor <project-id>` checks SQLite integrity, reconciliation debt, layout drift,
+  state/decision consistency, and registry capability-projection drift
 
 ### LLM / Provider Configuration
 
 MAS routes a semantic profile before choosing a vendor model. Planning, review,
 and evaluation default to `reasoning`; bounded execution defaults to `economy`.
 High-risk, critical-agent, and retry paths escalate before any economy assignment.
+Product and project manager roles retain `reasoning` in every phase. On Claude,
+the ordered reasoning route is Fable first and Opus 4.8 only for declared
+unavailability/exclusion or refusal.
 
 `mas/system_config.yaml` ships interchangeable Anthropic, OpenAI, and
 Gemini/LiteLLM catalogs. Select one with `--catalog` or `MAS_MODEL_CATALOG`.
 All agent prompts use `model: inherit` and `model_profile: auto`, so the public
 roster is not pinned to Anthropic.
 
+In manual mode, `mas prompt` records a non-billable `prompt_estimated` preview
+and `mas ingest` records an observed response with heuristic token counting. Use
+`mas log-tokens` for exact provider counts, including cached-input, cache-write,
+and billable-input tokens. Prompt envelopes expose a stable-prefix fingerprint
+and component estimates so adapters can apply prompt caching without
+provider-specific governance in the core. Dispatch envelopes also carry an
+ordered candidate list and `dispatch_id`.
+
 | Surface | Route behavior |
 |---------|----------------|
 | Autonomous `mas run` | Engine-enforced provider/model route using the selected catalog |
+| Claude Code | Applies the Anthropic envelope model; planning is Fable-first with approved Opus fallback |
 | Codex | Emits model and reasoning-effort hints through the prompt envelope/MCP |
 | OpenCode | Emits the selected `-m provider/model` launch arguments |
-| Generic manual UI | Records a recommended route without falsely claiming host enforcement |
+| Copilot / generic UI | Advisory unless the host selects and reports the actual model |
+
+Manual selection is not execution proof. Reasoning state changes require a
+matching receipt; client/operator receipts are attestations. Autonomous calls
+check provider-reported model identity against the approved candidates.
 
 Inspect catalogs with `mas model-catalogs`, preview or opt into bounded calls with
 `mas model-canary [--live]`, and inspect privacy-safe aggregates with
@@ -603,6 +626,8 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 - [docs/architecture.md](docs/architecture.md) — component & lifecycle map
 - [docs/architecture/model-routing.md](docs/architecture/model-routing.md) — phase-aware provider catalogs, canaries, and telemetry
 - [docs/architecture/surface-compatibility-contract.md](docs/architecture/surface-compatibility-contract.md) — shared contract for Codex, Claude Code, OpenCode, and other clients
+- [docs/architecture/runtime-storage-contract.md](docs/architecture/runtime-storage-contract.md) — runtime DB, recovery, reconciliation, and cleanup boundaries
+- [docs/architecture/prompt-token-contract.md](docs/architecture/prompt-token-contract.md) — truthful token telemetry, cache boundaries, and accuracy-preserving startup context
 - [docs/operation-modes.md](docs/operation-modes.md) — Claude Code config mode vs source-tree MAS mode
 - [docs/governance/behavioral-discipline.md](docs/governance/behavioral-discipline.md) — MAS commit evidence for Claude Code, Codex, OpenCode, Copilot, and manual/package surfaces
 - [docs/authoring-agents.md](docs/authoring-agents.md) — add/update an agent without breaking registry invariants

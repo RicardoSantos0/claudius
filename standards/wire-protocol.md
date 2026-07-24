@@ -128,3 +128,13 @@ Used when `mas run` drives the project loop:
 | `next_agents` | [agent_id, ...] | Parallel dispatch (when HR marks `parallel: true`) |
 | `skill_request` / `sk_req` | object | Skill request; use `name`, `query`, and optional `required`; transport should prefer `sk_req` |
 | `skill_used` / `sk_used` | list | Skill usage records; string entries are accepted but object entries are preferred; transport should prefer `sk_used` |
+
+On successful manual/MCP ingestion, every `sk_used` item is persisted as a typed
+`skill_completed` event with the acting agent and phase. This is execution
+telemetry, not permission: the skill bridge still enforces the agent's grant.
+
+Manual execution receipts are transport metadata, not model-authored wire
+fields. CLI clients pass `dispatch_id`, reported provider/model, and evidence
+source to `mas ingest`; MCP clients pass the same values to `mas_ingest`.
+Reasoning-profile state changes fail before mutation when a required receipt is
+missing, mismatched, or replayed.

@@ -46,7 +46,14 @@ llm:
   master_model: "claude-fable-5"         # Legacy reasoning fallback
   default_model: "claude-sonnet-5"       # Legacy standard fallback
   execution_profiles:
-    reasoning: {provider: "anthropic", model: "claude-fable-5"}
+    reasoning:
+      provider: "anthropic"
+      model: "claude-fable-5"
+      fallbacks:
+        - provider: "anthropic"
+          model: "claude-opus-4-8"
+          opencode_model: "claude-opus-4-8"
+          on: ["model_unavailable", "refusal"]
     standard: {provider: "anthropic", model: "claude-sonnet-5"}
     economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001"}
   default_provider_catalog: "anthropic"
@@ -60,7 +67,15 @@ llm:
       lifecycle_state: "active"
       credential_env: "ANTHROPIC_API_KEY"
       profiles:
-        reasoning: {provider: "anthropic", model: "claude-fable-5", opencode_model: "claude-fable-5"}
+        reasoning:
+          provider: "anthropic"
+          model: "claude-fable-5"
+          opencode_model: "claude-fable-5"
+          fallbacks:
+            - provider: "anthropic"
+              model: "claude-opus-4-8"
+              opencode_model: "claude-opus-4-8"
+              on: ["model_unavailable", "refusal"]
         standard: {provider: "anthropic", model: "claude-sonnet-5", opencode_model: "claude-sonnet-5"}
         economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001", opencode_model: "claude-haiku-4-5-20251001"}
     openai:
@@ -112,15 +127,28 @@ llm:
     risk_escalation_profile: "reasoning"
     retry_escalation_profile: "standard"
     manual_enforcement_capability: "recommended"
+    receipt_required_profiles: ["reasoning"]
+  # Capability describes whether a host can apply the selected route. Manual
+  # selection remains unverified until the receipt is ingested.
   surfaces:
     generic:
       adapter: "manual"
       enforcement_capability: "recommended"
       profiles: {}
+    claude:
+      adapter: "claude_code_subagent"
+      catalog: "anthropic"
+      enforcement_capability: "client_selectable"
+      profiles: {}
+    copilot:
+      adapter: "github_copilot_agent"
+      catalog: "inherit"
+      enforcement_capability: "advisory"
+      profiles: {}
     codex:
       adapter: "codex_config"
       catalog: "openai"
-      enforcement_capability: "recommended"
+      enforcement_capability: "client_selectable"
       profiles:
         reasoning: {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high"}
         standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium"}
@@ -128,11 +156,18 @@ llm:
     opencode:
       adapter: "opencode_cli"
       catalog: "inherit"
-      enforcement_capability: "recommended"
+      enforcement_capability: "client_selectable"
+      profiles: {}
+    local:
+      adapter: "openai_compatible"
+      catalog: "inherit"
+      enforcement_capability: "client_selectable"
       profiles: {}
   max_tokens: 4096
   temperature: 0.3
-  agent_overrides: {}                   # Per-agent overrides if needed
+  agent_overrides:
+    product_manager_agent: "reasoning"
+    project_manager_agent: "reasoning"
 
 # --- TRUST TIERS ---
 trust_tiers:

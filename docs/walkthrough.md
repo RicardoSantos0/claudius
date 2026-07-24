@@ -57,6 +57,12 @@ Storage          : db=sqlite vector=disabled
 Tokens (total)   : 0
 ```
 
+The first status can show zero tokens before any prompt or response is recorded.
+In manual mode, `mas prompt` records a non-billable preview estimate and
+`mas ingest` records an observed response with heuristic token counting.
+`mas tokens <project-id>` reports those categories separately; use
+`mas log-tokens` when the provider exposes exact or cache-specific counts.
+
 ## 3. Get the next agent's prompt
 
 `mas prompt` assembles the full, governance-aware prompt for whoever should act

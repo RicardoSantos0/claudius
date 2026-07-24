@@ -36,6 +36,28 @@ Legacy/manual handoff payloads are normalized by `HandoffEngine.create()`: expli
 is supplied only when absent. New compact records use `p.sum` for summary and `p.s`
 for status; historical records remain readable.
 
+## Model Dispatch and Receipt
+
+Manual clients separate route selection, application, receipt, and verification:
+
+```bash
+# Use --surface codex|copilot|opencode|local as applicable.
+mas prompt {project_id} {agent_id} --surface claude --json
+
+# Select the approved Opus fallback when Fable is unavailable/not in the plan.
+mas prompt {project_id} {agent_id} --surface claude \
+  --exclude-model claude-fable-5 --json
+
+mas ingest {project_id} --agent {agent_id} \
+  --dispatch-id {dispatch_id} --reported-provider {provider} \
+  --reported-model {actual_model} --verification-source client < response.txt
+```
+
+Planning roles retain `reasoning`. In the Anthropic catalog that is Fable first
+and Opus 4.8 only for declared unavailability/refusal. Never switch for rate
+limits or generic errors, and never call a manual selection enforced without
+execution evidence.
+
 ## Shared State Commands
 ```bash
 # Read a field

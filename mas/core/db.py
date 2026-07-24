@@ -17,7 +17,7 @@ Public API:
   query_project_history(project_id, limit)  → list[dict]  (chronological)
   query_agent_context(project_id, agent_id, limit) → list[dict]
   semantic_search(query, project_id, limit) → list[dict]  (FTS5 ranked)
-  query_token_usage(project_id) → dict  (summed token counts for agent_call events)
+  query_token_usage(project_id) → dict  (observed calls + separate preview estimates)
   format_events_for_prompt(events) → str
 """
 
@@ -37,6 +37,7 @@ from core.runtime_config import get_database_backend
 from core.adapters import postgres_store
 
 logger = logging.getLogger(__name__)
+DEFAULT_DB_PATH = DB_PATH
 
 __all__ = [
     "DB_PATH",
@@ -49,6 +50,7 @@ __all__ = [
     "semantic_search",
     "query_token_usage",
     "record_manual_tokens",
+    "record_prompt_estimate",
     "record_route_telemetry",
     "aggregate_route_telemetry",
     "query_graph_node",
@@ -60,22 +62,46 @@ __all__ = [
 ]
 
 
-def _resolved_db_url(db_path: Path = DB_PATH) -> str:
-    if db_path != DB_PATH:
-        return f"sqlite:///{db_path}"
+def _effective_db_path(db_path: Path | None = None) -> Path | None:
+    """Return an explicit/overridden path, or None for runtime-config routing."""
+    if db_path is not None:
+        return Path(db_path)
+    if DB_PATH != DEFAULT_DB_PATH:
+        return Path(DB_PATH)
+    return None
+
+
+def _resolved_db_url(db_path: Path | None = None) -> str:
+    effective_path = _effective_db_path(db_path)
+    if effective_path is not None:
+        return f"sqlite:///{effective_path}"
     return get_database_backend()["url"]
+
+
+def _resolved_sqlite_path(db_path: Path | None = None) -> Path:
+    resolved_url = _resolved_db_url(db_path)
+    if resolved_url.startswith("sqlite:///"):
+        return Path(resolved_url.replace("sqlite:///", "", 1))
+    effective_path = _effective_db_path(db_path)
+    if effective_path is not None:
+        return effective_path
+    return Path(DB_PATH)
 
 
 def query_project_history(
     project_id: str,
     limit: int = 20,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict]:
     """
     Return the most recent N events for a project, in chronological order.
     Use this in agent context injection — agents see what happened before them.
     """
-    rows = query_events(project_id=project_id, limit=limit, db_path=db_path)
+    rows = query_events(
+        project_id=project_id,
+        limit=limit,
+        db_path=_effective_db_path(db_path),
+    )
     return list(reversed(rows))  # query_events returns newest-first; reverse for agents
 
 
@@ -83,14 +109,18 @@ def query_agent_context(
     project_id: str,
     agent_id: str,
     limit: int = 10,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict]:
     """
     Return the most recent N events for a specific agent on a project.
     Use to give an agent its own recent history.
     """
-    rows = query_events(project_id=project_id, agent_id=agent_id,
-                        limit=limit, db_path=db_path)
+    rows = query_events(
+        project_id=project_id,
+        agent_id=agent_id,
+        limit=limit,
+        db_path=_effective_db_path(db_path),
+    )
     return list(reversed(rows))
 
 
@@ -98,7 +128,7 @@ def semantic_search(
     query: str,
     project_id: str | None = None,
     limit: int = 5,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict]:
     """
     Full-text search over agent_events using the FTS5 index (agent_events_fts).
@@ -124,7 +154,7 @@ def semantic_search(
     if postgres_store.is_postgres_url(resolved_url):
         return postgres_store.semantic_search(resolved_url, query, project_id=project_id, limit=limit)
     try:
-        with _get_connection(db_path) as conn:
+        with _get_connection(_resolved_sqlite_path(db_path)) as conn:
             if project_id:
                 sql = """
                     SELECT ae.id, ae.project_id, ae.agent_id, ae.action_type,
@@ -155,19 +185,28 @@ def semantic_search(
 
 def query_token_usage(
     project_id: str,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> dict:
     """
-    Sum token usage across all agent_call events for a project.
+    Sum token usage across observed agent_call events for a project and report
+    prompt-preview estimates separately.
     Token fields are stored in the JSON payload as:
       {"tokens_prompt": N, "tokens_completion": N, "tokens_total": N}
 
     Returns:
-        {"total_prompt": int, "total_completion": int, "total": int, "calls": int}
+        Observed totals, call count, measurement-source counts, cache counters,
+        and non-billable preview-estimate totals.
     """
     try:
-        rows = query_events(project_id=project_id, action_type="agent_call", db_path=db_path)
+        effective_path = _effective_db_path(db_path)
+        rows = query_events(
+            project_id=project_id,
+            action_type="agent_call",
+            db_path=effective_path,
+        )
         total_prompt = total_completion = total = calls = 0
+        cached_input = cache_creation_input = billable_input = 0
+        measurement_sources: dict[str, int] = {}
         for row in rows:
             try:
                 data = _json.loads(row["payload"] or "{}")
@@ -176,19 +215,55 @@ def query_token_usage(
                 total_prompt     += params.get("tokens_prompt", 0)
                 total_completion += params.get("tokens_completion", 0)
                 total            += params.get("tokens_total", 0)
+                cached_input += params.get("cached_input_tokens", 0)
+                cache_creation_input += params.get(
+                    "cache_creation_input_tokens", 0
+                )
+                billable_input += params.get("billable_input_tokens", 0)
+                source = str(params.get("measurement_source") or "unspecified")
+                measurement_sources[source] = (
+                    measurement_sources.get(source, 0) + 1
+                )
                 calls += 1
             except Exception as exc:
                 logger.debug("skipping malformed token-usage row: %s", exc)
+        preview_rows = query_events(
+            project_id=project_id,
+            action_type="prompt_estimated",
+            db_path=effective_path,
+        )
+        preview_prompt_tokens = 0
+        for row in preview_rows:
+            try:
+                data = _json.loads(row["payload"] or "{}")
+                data = data.get("params", {}).get("inputs", data)
+                preview_prompt_tokens += int(
+                    data.get("estimated_prompt_tokens", 0) or 0
+                )
+            except Exception as exc:
+                logger.debug("skipping malformed prompt-estimate row: %s", exc)
         return {
             "total_prompt":     total_prompt,
             "total_completion": total_completion,
             "total":            total,
             "calls":            calls,
+            "measurement_sources": measurement_sources,
+            "cached_input_tokens": cached_input,
+            "cache_creation_input_tokens": cache_creation_input,
+            "billable_input_tokens": billable_input,
+            "preview_estimates": len(preview_rows),
+            "preview_prompt_tokens": preview_prompt_tokens,
         }
     except Exception:
         return {
             "total_prompt": 0, "total_completion": 0, "total": 0,
             "calls": 0,
+            "measurement_sources": {},
+            "cached_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "billable_input_tokens": 0,
+            "preview_estimates": 0,
+            "preview_prompt_tokens": 0,
         }
 
 
@@ -198,7 +273,11 @@ def record_manual_tokens(
     tokens_prompt: int = 0,
     tokens_completion: int = 0,
     note: str = "",
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
+    measurement_source: str = "operator_reported",
+    cached_input_tokens: int = 0,
+    cache_creation_input_tokens: int = 0,
+    billable_input_tokens: int = 0,
 ) -> str:
     """Record manual-mode (Claude Code) token usage as an agent_call event.
 
@@ -220,14 +299,52 @@ def record_manual_tokens(
             "tokens_completion": int(tokens_completion),
             "tokens_total": tokens_total,
             "source": "manual",
+            "measurement_source": measurement_source,
+            "cached_input_tokens": int(cached_input_tokens),
+            "cache_creation_input_tokens": int(cache_creation_input_tokens),
+            "billable_input_tokens": int(billable_input_tokens),
+            "billable_status": "unknown",
         },
-        db_path=db_path,
+        db_path=_effective_db_path(db_path),
+    )
+
+
+def record_prompt_estimate(
+    project_id: str,
+    agent_id: str,
+    estimated_prompt_tokens: int,
+    metadata: dict | None = None,
+    note: str = "",
+    db_path: Path | None = None,
+) -> str:
+    """Record prompt assembly as a non-billable preview estimate.
+
+    Prompt construction does not prove that a provider call happened. Keeping the
+    estimate in its own event class prevents capacity planning from being confused
+    with observed calls or billed usage.
+    """
+    payload = dict(metadata or {})
+    payload.update(
+        {
+            "estimated_prompt_tokens": int(estimated_prompt_tokens),
+            "measurement_source": "local_token_estimator",
+            "billable": False,
+        }
+    )
+    return append_event(
+        project_id=project_id,
+        agent_id=agent_id,
+        action_type="prompt_estimated",
+        intent=(note or "manual prompt preview assembled")[:120],
+        result_shape=f"estimated_tokens={int(estimated_prompt_tokens)}",
+        payload=payload,
+        db_path=_effective_db_path(db_path),
     )
 
 
 def record_route_telemetry(
     metadata: dict,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> int:
     """Persist privacy-safe routing metadata on the configured SQL backend."""
     resolved_url = _resolved_db_url(db_path)
@@ -235,14 +352,14 @@ def record_route_telemetry(
         return postgres_store.record_route_telemetry(resolved_url, metadata)
     from core.engine.route_telemetry import RouteTelemetryStore
 
-    return RouteTelemetryStore(db_path).record(metadata)
+    return RouteTelemetryStore(_resolved_sqlite_path(db_path)).record(metadata)
 
 
 def aggregate_route_telemetry(
     *,
     provider_catalog: str | None = None,
     profile: str | None = None,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> dict[str, int | float | None]:
     """Aggregate routing telemetry on the configured SQLite/PostgreSQL backend."""
     resolved_url = _resolved_db_url(db_path)
@@ -254,7 +371,7 @@ def aggregate_route_telemetry(
         )
     from core.engine.route_telemetry import RouteTelemetryStore
 
-    return RouteTelemetryStore(db_path).aggregate(
+    return RouteTelemetryStore(_resolved_sqlite_path(db_path)).aggregate(
         provider_catalog=provider_catalog,
         profile=profile,
     )
@@ -262,7 +379,7 @@ def aggregate_route_telemetry(
 
 def query_graph_node(
     node_id: str,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> dict | None:
     """
     Retrieve a single node from the agent_graph table by its ID.
@@ -276,7 +393,7 @@ def query_graph_node(
     if postgres_store.is_postgres_url(resolved_url):
         return postgres_store.query_graph_node(resolved_url, node_id)
     try:
-        with _get_connection(db_path) as conn:
+        with _get_connection(_resolved_sqlite_path(db_path)) as conn:
             row = conn.execute(
                 "SELECT id, type, label, meta FROM agent_graph WHERE id = ?",
                 (node_id,),
@@ -289,7 +406,7 @@ def query_graph_node(
 def query_graph_edges(
     node_id: str,
     limit: int = 10,
-    db_path: Path = DB_PATH,
+    db_path: Path | None = None,
 ) -> list[dict]:
     """
     Retrieve all edges where node_id is the source OR target.
@@ -304,7 +421,7 @@ def query_graph_edges(
     if postgres_store.is_postgres_url(resolved_url):
         return postgres_store.query_graph_edges(resolved_url, node_id, limit=limit)
     try:
-        with _get_connection(db_path) as conn:
+        with _get_connection(_resolved_sqlite_path(db_path)) as conn:
             rows = conn.execute(
                 """SELECT id, source, target, relation, meta
                    FROM agent_graph_edges
@@ -334,7 +451,7 @@ def format_events_for_prompt(events: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def upsert_shared_state(project_id: str, state: dict, db_path: Path = DB_PATH) -> None:
+def upsert_shared_state(project_id: str, state: dict, db_path: Path | None = None) -> None:
     resolved_url = _resolved_db_url(db_path)
     if postgres_store.is_postgres_url(resolved_url):
         postgres_store.upsert_shared_state(resolved_url, project_id, state)
@@ -347,7 +464,7 @@ def upsert_shared_state(project_id: str, state: dict, db_path: Path = DB_PATH) -
         _sqlite_upsert(resolved_url, project_id, state)
 
 
-def get_shared_state(project_id: str, db_path: Path = DB_PATH) -> dict | None:
+def get_shared_state(project_id: str, db_path: Path | None = None) -> dict | None:
     resolved_url = _resolved_db_url(db_path)
     if postgres_store.is_postgres_url(resolved_url):
         return postgres_store.get_shared_state(resolved_url, project_id)

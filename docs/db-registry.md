@@ -96,6 +96,9 @@ upserts rows into all 6 tables, and skips rows whose paths have not changed.
 # CLI
 uv run mas registry seed
 
+# Seed an isolated/recovery database without touching the active runtime store
+uv run mas registry seed --db-path path/to/registry.db
+
 # Library
 from mas.core.utils.registry_seed import seed
 seed()
@@ -117,7 +120,11 @@ Three engine modules query the registry before falling back to the filesystem:
 | `capability_registry.py` (`_db_agents`, `list_agents`) | `mas_agents` | `registry_index.yaml` |
 
 The pattern keeps runtime lookups fast (indexed SQL) while ensuring the system
-degrades gracefully if the DB file is absent or stale.
+degrades gracefully if the DB file is absent or stale. For capability matching,
+the operational DB row is overlaid with the semantic capability vocabulary from
+`registry_index.yaml`; a stale DB projection therefore cannot silently produce a
+false gap certificate. `CapabilityRegistry.capability_projection_drift()` and
+`mas doctor` still report the mismatch so it can be repaired.
 
 ---
 
@@ -137,4 +144,12 @@ uv run mas registry list --table mas_commands
 uv run mas registry list --table mas_templates
 uv run mas registry list --table mas_domains
 uv run mas registry list --table mas_codebase
+```
+
+After editing agent capabilities, sync both projections:
+
+```bash
+uv run python mas/tools/roster_sync.py
+uv run python mas/core/engine/capability_registry.py sync-db-from-yaml
+uv run mas doctor
 ```

@@ -119,10 +119,11 @@ def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
     #   - SharedStateManager.ROOT        — used to load existing project state
     monkeypatch.setattr("core.config.get_projects_dir", lambda: projects_dir)
     monkeypatch.setattr(ssm, "ROOT", tmp_path)
-    # Isolate from the local episodic.db — event recording is non-essential here.
+    # Isolate from the local episodic.db while simulating a persisted audit ID.
+    # Reasoning routes require this selection evidence so receipts can bind to it.
     monkeypatch.setattr(
         "core.engine.event_recorder.EventRecorder.record_simple",
-        lambda *a, **k: None,
+        lambda *a, **k: "evt-smoke-route",
     )
 
     init = runner.invoke(main, ["init", SMOKE_ID])
@@ -133,7 +134,6 @@ def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
     assert status.exit_code == 0, status.output
     assert SMOKE_ID in status.output
 
-    with pytest.warns(RuntimeWarning, match="route audit was not persisted"):
-        prompt = runner.invoke(main, ["prompt", SMOKE_ID])
+    prompt = runner.invoke(main, ["prompt", SMOKE_ID])
     assert prompt.exit_code == 0, prompt.output
     assert prompt.output.strip()

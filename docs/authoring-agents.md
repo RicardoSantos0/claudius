@@ -32,6 +32,10 @@ Frontmatter rules checked by the validator:
 Use `model: inherit` and `model_profile: auto` for provider-neutral routing. An
 explicit model is a legacy override and should be reserved for a documented,
 authorized compatibility requirement.
+Task-specific routing belongs in `llm.agent_overrides` and provider catalogs,
+not agent-file pins. Planning roles resolve to `reasoning`: Claude receives
+Fable first with approved Opus fallback, while Codex/OpenCode/local surfaces
+resolve the same semantic profile through their selected catalog.
 
 ## 2. Register the agent
 
@@ -77,10 +81,13 @@ runtime DB index so capability discovery and prompt assembly see the change:
 ```bash
 uv run python mas/tools/roster_sync.py            # apply
 uv run python mas/tools/roster_sync.py --dry-run  # preview without writing
+uv run python mas/core/engine/capability_registry.py sync-db-from-yaml
 ```
 
 This upserts the registry into the `mas_agents` table of `mas/data/episodic.db`.
-Skipping it can leave a stale agent set in runtime lookups.
+The capability sync refreshes the operational capability projection. Skipping it
+can leave a stale agent set or capability projection in runtime lookups; `mas
+doctor` reports the drift.
 
 ## 4. Validate
 

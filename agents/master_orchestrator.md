@@ -483,27 +483,34 @@ Each `dec` entry supports:
 When invoked directly through Claude Code rather than live `mas run`, do manual orchestration. Use `uv run mas prompt` to assemble the next agent prompt, then invoke that agent in Claude Code. This mode does not require an Anthropic API key.
 
 **Pattern for each delegation:**
-1. Run `uv run mas prompt <project_id> <agent_id>` to get the assembled prompt for the agent
-2. Spawn the agent: `Agent(subagent_type="<agent_id>", prompt=<assembled_prompt>)`
-3. Parse the agent's wire-format JSON response
-4. Apply results to state using `SharedStateManager` and `HandoffEngine` Python tools directly
+1. Run `mas prompt <project_id> <agent_id> --surface claude --json`.
+2. Read `prompt`, `routing.model`, `dispatch.dispatch_id`, and
+   `routing.candidates` from the envelope.
+3. Spawn with the selected model:
+   `Agent(subagent_type="<agent_id>", prompt=<prompt>, model=<routing.model>)`.
+4. Claude planning roles use Fable first. If the active plan excludes it,
+   regenerate with `--exclude-model claude-fable-5` so MAS selects Opus 4.8.
+   Runtime fallback is allowed only for unavailability or refusal.
+5. Apply the wire response through `mas ingest` with `--dispatch-id`,
+   `--reported-provider`, `--reported-model`, and `--verification-source`.
+   Do not mutate state directly in place of ingestion.
+
+Selection is not execution proof. Client/operator reports are attestations;
+only provider-reported model identity is verification.
 
 **Example — delegating to inquirer_agent:**
 ```bash
 # Get the prompt
-uv run mas prompt proj-YYYYMMDD-NNN-mas-self-audit inquirer_agent
+mas prompt proj-YYYYMMDD-NNN-mas-self-audit inquirer_agent --surface claude --json
 ```
-Then: `Agent(subagent_type="inquirer_agent", prompt=<output from above>)`
+Then: `Agent(subagent_type="inquirer_agent", prompt=<envelope.prompt>, model=<envelope.routing.model>)`
 
-The sub-agent's response will contain a wire block. Apply it:
-```python
-uv run python -c "
-from mas.core.engine.shared_state_manager import SharedStateManager
-from mas.core.engine.handoff_engine import HandoffEngine
-sm = SharedStateManager('<project_id>')
-he = HandoffEngine()
-# accept the pending handoff, write decisions/artifacts from response
-"
+The sub-agent's response will contain a wire block. Apply it through the shared
+manual harness:
+```bash
+mas ingest <project_id> --agent inquirer_agent \
+  --dispatch-id <id> --reported-provider anthropic \
+  --reported-model <actual-model> --verification-source client < response.txt
 ```
 
 **When to use which mode:**

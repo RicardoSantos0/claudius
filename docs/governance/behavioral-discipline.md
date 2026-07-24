@@ -59,5 +59,6 @@ The expected sequence is:
 
 For standard projects, intake should include an accepted `inquirer_agent` handoff
 before implementation proceeds. Manual mode still consumes model tokens, so
-`mas prompt`, `mas ingest`, and `mas log-tokens` feed token evidence into the same
-audit trail used by the commit gate.
+`mas prompt` feeds non-billable preview evidence, `mas ingest` records the
+observed manual response, and `mas log-tokens` adds exact provider/cache evidence
+to the same audit trail used by the commit gate.

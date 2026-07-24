@@ -201,7 +201,12 @@ def _pending_handoffs_from_state(state: dict) -> list[dict]:
     return [h for h in history if _handoff_acceptance_status(h) == "pending"]
 
 
-def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
+def _assemble_prompt(
+    project_id: str,
+    agent_id: str,
+    state: dict,
+    include_metadata: bool = False,
+) -> str | tuple[str, dict]:
     agents_dir = ROOT.parent / "agents"
     from core.engine.prompt_assembler import PromptAssembler
     from core.engine.agent_ids import normalize_agent_id
@@ -212,34 +217,22 @@ def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
     except FileNotFoundError:
         click.echo(f"[error] Agent template not found for '{canonical_agent_id}' in {agents_dir}", err=True)
         sys.exit(1)
-    # The assembler already computed the exact token count of the prompt it built.
-    # In manual (Claude Code) mode this is the INPUT-token cost of the upcoming turn —
-    # capture it so manual-mode work isn't counted as zero (ip-drift-004). Output/
-    # reasoning tokens live in the Claude Code session and must be added via
-    # `mas log-tokens --completion`. Non-fatal.
+    # Assembly is a preview, not proof of a provider call. Record its local estimate
+    # separately so capacity telemetry never masquerades as observed/billable usage.
     try:
-        from core.db import record_manual_tokens
+        from core.db import record_prompt_estimate
         prompt_tokens = int(getattr(assembler, "last_token_count", 0) or 0)
-        record_manual_tokens(
+        prompt_metadata = getattr(assembler, "last_prompt_metadata", {}) or {}
+        record_prompt_estimate(
             project_id, canonical_agent_id,
-            tokens_prompt=prompt_tokens,
-            tokens_completion=0,
-            note=f"prompt assembled for {canonical_agent_id} (manual-mode input)",
+            estimated_prompt_tokens=prompt_tokens,
+            metadata=prompt_metadata,
+            note=f"prompt preview assembled for {canonical_agent_id}",
         )
-        try:
-            from core.engine.shared_state_manager import SharedStateManager
-            phase = state.get("core_identity", {}).get("current_phase", "unknown")
-            SharedStateManager(project_id).system_add_tokens(
-                canonical_agent_id,
-                phase,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=0,
-            )
-        except Exception as exc:
-            logger.debug("prompt-token state capture failed (non-blocking): %s", exc)
     except Exception as exc:  # never block prompt assembly on telemetry
-        logger.debug("prompt-token capture failed (non-blocking): %s", exc)
-    return prompt
+        logger.debug("prompt-estimate capture failed (non-blocking): %s", exc)
+    metadata = getattr(assembler, "last_prompt_metadata", {}) or {}
+    return (prompt, metadata) if include_metadata else prompt
 
 
 def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None) -> None:
@@ -257,6 +250,14 @@ def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None)
             hints.append("launch=" + " ".join(selection.launch_args))
         if hints:
             header += "\n# Route hint: " + " | ".join(hints)
+        accepted = ",".join(
+            str(candidate["model"]) for candidate in selection.candidates
+        )
+        header += (
+            f"\n# Dispatch: {selection.dispatch_id} | "
+            f"receipt={'required' if selection.verification_required else 'optional'}"
+            f" | accepted_models={accepted}"
+        )
     header += "\n#" + "-" * 60
     out = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout
     out.write((header + "\n" + assembled + "\n").encode("utf-8", errors="replace"))
@@ -798,6 +799,29 @@ def doctor(project_id: str | None):
         add("ok", "registry", f"{_ra} agents, {_rs} skills registered")
     except Exception:
         add("warn", "registry", f"registry_index.yaml not readable at {registry_path}")
+    try:
+        from core.engine.capability_registry import CapabilityRegistry
+
+        projection_drift = CapabilityRegistry().capability_projection_drift()
+        if projection_drift:
+            add(
+                "warn",
+                "capability_registry_projection",
+                f"{len(projection_drift)} agent capability projection(s) differ "
+                "between YAML and SQLite; run capability registry sync after backup",
+            )
+        else:
+            add(
+                "ok",
+                "capability_registry_projection",
+                "YAML and SQLite agent capabilities agree",
+            )
+    except Exception as exc:
+        add(
+            "warn",
+            "capability_registry_projection",
+            f"projection check failed: {exc}",
+        )
 
     agents_dir = ROOT.parent / "agents"
     skills_dir = ROOT.parent / "skills"
@@ -835,6 +859,7 @@ def doctor(project_id: str | None):
             f"installed wheel but no workspace — run `mas init-workspace` (creates {workspace_root()})")
 
     # Backend checks
+    active_db_path: Path | None = None
     try:
         from core.runtime_config import get_database_backend, get_vector_backend
         db_backend = get_database_backend()
@@ -850,8 +875,16 @@ def doctor(project_id: str | None):
         url = db_backend.get("url", "")
         if provider == "sqlite":
             db_path = _resolve_sqlite_path(url)
+            active_db_path = db_path
             init_db(db_path=db_path)
             add("ok", "database_backend", f"sqlite ready at {db_path}")
+            from core.db import _get_connection
+            with _get_connection(db_path) as conn:
+                integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
+            if integrity == "ok":
+                add("ok", "database_integrity", "PRAGMA quick_check=ok")
+            else:
+                add("fail", "database_integrity", str(integrity))
         elif provider == "postgresql":
             from core.adapters import postgres_store
             with postgres_store.connect(url) as conn:
@@ -900,6 +933,38 @@ def doctor(project_id: str | None):
                 project_state = yaml.safe_load(f) or {}
         except Exception:
             project_state = None
+        if project_state is not None and active_db_path is not None:
+            try:
+                from core.engine.state_reconciler import reconcile_project
+
+                debt = reconcile_project(
+                    project_id,
+                    project_state,
+                    db_path=active_db_path,
+                    dry_run=True,
+                )
+                missing = int(debt.get("added", 0) or 0)
+                kinds = ", ".join(debt.get("kinds", []) or []) or "none"
+                health_checks.append(
+                    (
+                        "warn" if missing else "ok",
+                        "event_reconciliation",
+                        (
+                            f"{missing} canonical event(s) missing; kinds={kinds}; "
+                            "dry-run only"
+                            if missing
+                            else "canonical event projection synchronized (dry-run)"
+                        ),
+                    )
+                )
+            except Exception as exc:
+                health_checks.append(
+                    (
+                        "warn",
+                        "event_reconciliation",
+                        f"dry-run reconciliation check failed: {exc}",
+                    )
+                )
 
     status_icons = {"ok": "[ok]", "warn": "[warn]", "fail": "[fail]"}
     ok_count = warn_count = fail_count = 0
@@ -1577,11 +1642,22 @@ def tokens(project_id: str):
     completion = usage.get("total_completion", 0)
     calls      = usage.get("calls", 0)
 
+    preview_count = usage.get("preview_estimates", 0)
+    preview_tokens = usage.get("preview_prompt_tokens", 0)
     click.echo(f"\nToken usage — {project_id}")
-    click.echo(f"  Total calls      : {calls}")
+    click.echo(f"  Observed calls   : {calls}")
     click.echo(f"  Prompt tokens    : {prompt:,}")
     click.echo(f"  Completion tokens: {completion:,}")
     click.echo(f"  Total tokens     : {total:,}")
+    click.echo(f"  Preview estimates: {preview_count}")
+    click.echo(f"  Preview tokens   : {preview_tokens:,} (non-billable estimate)")
+    cached = usage.get("cached_input_tokens", 0)
+    cache_write = usage.get("cache_creation_input_tokens", 0)
+    billable = usage.get("billable_input_tokens", 0)
+    if cached or cache_write or billable:
+        click.echo(f"  Cached input     : {cached:,}")
+        click.echo(f"  Cache creation   : {cache_write:,}")
+        click.echo(f"  Billable input   : {billable:,}")
 
 
 # ---------------------------------------------------------------------------
@@ -1594,11 +1670,18 @@ def tokens(project_id: str):
               help="Agent the tokens are attributed to.")
 @click.option("--prompt", "prompt_tokens", type=int, default=0, help="Prompt/input tokens.")
 @click.option("--completion", "completion_tokens", type=int, default=0, help="Completion/output tokens.")
+@click.option("--cached-input", type=int, default=0,
+              help="Provider-reported input tokens served from prompt cache.")
+@click.option("--cache-write", type=int, default=0,
+              help="Provider-reported input tokens written to prompt cache.")
+@click.option("--billable-input", type=int, default=0,
+              help="Provider-reported billable input tokens.")
 @click.option("--estimate-file", type=click.Path(exists=True), default=None,
               help="Estimate prompt tokens from a text/prompt file (heuristic count).")
 @click.option("--note", default="", help="Optional note for the log entry.")
 def log_tokens(project_id: str, agent: str, prompt_tokens: int,
-               completion_tokens: int, estimate_file: str | None, note: str):
+               completion_tokens: int, cached_input: int, cache_write: int,
+               billable_input: int, estimate_file: str | None, note: str):
     """Record manual-mode (Claude Code) token usage so it isn't counted as zero.
 
     Manual mode burns real tokens the engine never auto-records (it only tracks tokens
@@ -1620,7 +1703,19 @@ def log_tokens(project_id: str, agent: str, prompt_tokens: int,
         click.echo("[error] Provide --prompt/--completion counts or --estimate-file.", err=True)
         sys.exit(1)
 
-    record_manual_tokens(project_id, agent, prompt_tokens, completion_tokens, note)
+    record_manual_tokens(
+        project_id,
+        agent,
+        prompt_tokens,
+        completion_tokens,
+        note,
+        measurement_source=(
+            "local_token_estimator" if estimate_file else "operator_reported"
+        ),
+        cached_input_tokens=cached_input,
+        cache_creation_input_tokens=cache_write,
+        billable_input_tokens=billable_input,
+    )
     total = prompt_tokens + completion_tokens
     click.echo(f"[ok] Logged {total:,} manual tokens "
                f"(prompt={prompt_tokens:,}, completion={completion_tokens:,}) to {project_id}.")
@@ -2586,10 +2681,24 @@ def run(
 @click.option("--enforcement-capability", default=None,
               help="Manual client capability, e.g. recommended or client_enforced.")
 @click.option("--surface", default="generic", show_default=True,
-              type=click.Choice(["generic", "codex", "opencode"]),
+              type=click.Choice(
+                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+              ),
               help="Manual client surface for provider/model adapter hints.")
 @click.option("--catalog", "provider_catalog", default=None,
               help="Provider catalog override (e.g. anthropic, openai, gemini).")
+@click.option(
+    "--available-model",
+    "available_models",
+    multiple=True,
+    help="Model available in the active client/plan; repeat to constrain routing.",
+)
+@click.option(
+    "--exclude-model",
+    "excluded_models",
+    multiple=True,
+    help="Model excluded by the active client/plan; repeat as needed.",
+)
 def prompt(
     project_id: str,
     agent_id: str | None,
@@ -2602,6 +2711,8 @@ def prompt(
     enforcement_capability: str | None,
     surface: str,
     provider_catalog: str | None,
+    available_models: tuple[str, ...],
+    excluded_models: tuple[str, ...],
 ):
     """Assemble and print the next agent's prompt for manual/provider-neutral mode.
 
@@ -2630,7 +2741,11 @@ def prompt(
         from core.engine.agent_ids import normalize_agent_id
         agent_id = normalize_agent_id(agent_id) or agent_id
 
-    assembled = _assemble_prompt(project_id, agent_id, state)
+    assembled_result = _assemble_prompt(project_id, agent_id, state, True)
+    if isinstance(assembled_result, tuple):
+        assembled, prompt_metadata = assembled_result
+    else:  # Backward-compatible for integrations monkeypatching the helper.
+        assembled, prompt_metadata = assembled_result, {}
     from core.engine.execution_profile_router import (
         ExecutionProfileRouter,
         build_manual_envelope,
@@ -2655,13 +2770,20 @@ def prompt(
             ),
             surface=surface,
             provider_catalog=provider_catalog,
+            available_models=(available_models or None),
+            excluded_models=(excluded_models or None),
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
     router.record_route_selection(project_id, selection)
     if as_json:
         envelope = build_manual_envelope(
-            project_id, agent_id, phase, assembled, selection
+            project_id,
+            agent_id,
+            phase,
+            assembled,
+            selection,
+            prompt_metadata=prompt_metadata,
         )
         click.echo(json.dumps(envelope, ensure_ascii=False))
         return
@@ -2681,10 +2803,25 @@ def prompt(
 @click.option("--show-prompt/--no-show-prompt", default=True,
               help="After applying, print the next agent prompt (default: yes).")
 @click.option("--surface", default="generic", show_default=True,
-              type=click.Choice(["generic", "codex", "opencode"]),
+              type=click.Choice(
+                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+              ),
               help="Manual client surface for the automatically selected next route.")
 @click.option("--catalog", "provider_catalog", default=None,
               help="Provider catalog for the automatically selected next route.")
+@click.option("--dispatch-id", default=None,
+              help="Dispatch ID emitted by `mas prompt`.")
+@click.option("--reported-provider", default=None,
+              help="Provider actually used by the manual client.")
+@click.option("--reported-model", default=None,
+              help="Model actually reported/used by the manual client.")
+@click.option(
+    "--verification-source",
+    type=click.Choice(["client", "provider", "operator"]),
+    default="client",
+    show_default=True,
+    help="Source of the provider/model claim in the receipt.",
+)
 def ingest(
     project_id: str,
     agent_id: str | None,
@@ -2692,6 +2829,10 @@ def ingest(
     show_prompt: bool,
     surface: str,
     provider_catalog: str | None,
+    dispatch_id: str | None,
+    reported_provider: str | None,
+    reported_model: str | None,
+    verification_source: str,
 ):
     """Ingest an LLM response (from ANY provider) and apply it to governed state.
 
@@ -2717,8 +2858,21 @@ def ingest(
     from core.engine.shared_state_manager import SharedStateManager
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig
 
+    receipt = None
+    if dispatch_id or reported_provider or reported_model:
+        receipt = {
+            "dispatch_id": dispatch_id,
+            "reported_provider": reported_provider,
+            "reported_model": reported_model,
+            "verification_source": verification_source,
+        }
     try:
-        res = apply_ingest(project_id, raw, agent_id)
+        res = apply_ingest(
+            project_id,
+            raw,
+            agent_id,
+            dispatch_receipt=receipt,
+        )
     except Exception as exc:
         click.echo(f"[error] could not record handoff: {exc}", err=True)
         sys.exit(1)
@@ -2731,6 +2885,12 @@ def ingest(
         click.echo(f"  parse warnings: {', '.join(res.parse_errors)}")
     if res.knowledge_request:
         click.echo(f"  KNOWLEDGE_REQUEST: {res.knowledge_request}")
+    if res.dispatch_verification:
+        verification = res.dispatch_verification
+        click.echo(
+            f"  dispatch receipt: {verification.get('status')} "
+            f"(required={str(bool(verification.get('required'))).lower()})"
+        )
     click.echo(
         f"  recorded handoff {res.handoff_id} "
         f"(decisions={res.decisions} artifacts={res.artifacts})"
@@ -2812,14 +2972,21 @@ def registry():
 
 
 @registry.command("seed")
-def registry_seed():
+@click.option(
+    "--db-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Seed an alternate SQLite registry DB (useful for isolated validation).",
+)
+def registry_seed(db_path: Path | None):
     """Seed all registry tables from the current filesystem state.
 
     Example: mas registry seed
     """
     try:
         from core.utils.registry_seed import seed
-        counts = seed()
+        from core.utils import log_helpers
+        counts = seed(db_path=db_path or log_helpers.DB_PATH)
         for table, n in counts.items():
             click.echo(f"  {table}: {n} rows")
         click.echo("[ok] Registry seeded.")

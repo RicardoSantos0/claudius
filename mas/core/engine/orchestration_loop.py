@@ -33,9 +33,10 @@ from typing import Any
 
 import yaml
 
+from core.paths import repo_root
+
 logger = logging.getLogger(__name__)
 
-from core.paths import repo_root
 ROOT = repo_root()  # repo root (holds agents/, skills/)
 
 # ---------------------------------------------------------------------------
@@ -169,7 +170,7 @@ class OrchestrationLoop:
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
                         self._pending_grounded_context = answer
-                        print(f"  [notebooklm] grounded context injected for next step")
+                        print("  [notebooklm] grounded context injected for next step")
 
                     if parsed.skill_request:
                         self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
@@ -201,7 +202,7 @@ class OrchestrationLoop:
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
                         self._pending_grounded_context = answer
-                        print(f"  [notebooklm] grounded context injected for next step")
+                        print("  [notebooklm] grounded context injected for next step")
 
                     if parsed.skill_request:
                         self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
@@ -322,21 +323,74 @@ class OrchestrationLoop:
         route_action_id = router.record_route_selection(self.config.project_id, selection)
         route_selection = selection.to_dict()
         route_selection["route_action_id"] = route_action_id
-        runner = AgentRunner(
-            model=selection.model,
-            provider=selection.provider,
-            route_selection=route_selection,
-        )
 
         from core.utils.config import load_config
         max_tokens = load_config().get("llm", {}).get("max_tokens", 4096)
 
-        result = runner.run(
-            agent_id=canonical_agent_id,
-            prompt=prompt,
-            project_id=self.config.project_id,
-            max_tokens=max_tokens,
-        )
+        candidates = list(selection.candidates or [])
+        if not candidates:
+            candidates = [{
+                "provider": selection.provider,
+                "model": selection.model,
+                "reasoning_effort": selection.reasoning_effort,
+                "fallback_on": [],
+            }]
+        start_index = max(0, int(selection.selected_candidate_index))
+        result: dict = {}
+        for candidate_index in range(start_index, len(candidates)):
+            candidate = candidates[candidate_index]
+            active_route = {
+                **route_selection,
+                "provider": candidate["provider"],
+                "model": candidate["model"],
+                "reasoning_effort": candidate.get("reasoning_effort"),
+                "active_candidate_index": candidate_index,
+                "execution_status": (
+                    "primary_attempt"
+                    if candidate_index == 0
+                    else "fallback_attempt"
+                ),
+            }
+            runner = AgentRunner(
+                model=str(candidate["model"]),
+                provider=str(candidate["provider"]),
+                route_selection=active_route,
+                reasoning_effort=candidate.get("reasoning_effort"),
+            )
+            result = runner.run(
+                agent_id=canonical_agent_id,
+                prompt=prompt,
+                project_id=self.config.project_id,
+                max_tokens=max_tokens,
+            )
+            has_next = candidate_index + 1 < len(candidates)
+            if not has_next or not router.should_fallback(candidate, result):
+                break
+            from core.engine.event_recorder import EventRecorder
+
+            next_candidate = candidates[candidate_index + 1]
+            EventRecorder().record_simple(
+                project_id=self.config.project_id,
+                actor=canonical_agent_id,
+                action_type="dispatch_fallback",
+                intent=(
+                    f"Approved model fallback after "
+                    f"{result.get('error_type', 'unclassified')} failure"
+                ),
+                phase=phase,
+                payload={
+                    "dispatch_id": selection.dispatch_id,
+                    "from": {
+                        "provider": candidate["provider"],
+                        "model": candidate["model"],
+                    },
+                    "to": {
+                        "provider": next_candidate["provider"],
+                        "model": next_candidate["model"],
+                    },
+                    "error_type": result.get("error_type"),
+                },
+            )
 
         text = result.get("text", "")
         tokens = result.get("tokens_used", 0)

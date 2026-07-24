@@ -23,9 +23,9 @@ Usage as library:
     score = engine.score_goal_achievement(success_criteria, task_outcomes)
 
 Usage as CLI:
-    uv run python mas/core/engine/metrics_engine.py score-project --project-id proj-001
-    uv run python mas/core/engine/metrics_engine.py score-agent  --project-id proj-001 --agent-id hr_agent
-    uv run python mas/core/engine/metrics_engine.py report       --project-id proj-001 [--save]
+    uv run python -m core.engine.metrics_engine score-project --project-id proj-001
+    uv run python -m core.engine.metrics_engine score-agent  --project-id proj-001 --agent-id hr_agent
+    uv run python -m core.engine.metrics_engine report       --project-id proj-001 [--save]
 """
 
 import sys
@@ -36,15 +36,14 @@ import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
+from core.paths import mas_root
 from core.utils.token_counter import TokenCounter
 
 _token_counter = TokenCounter()
 
-from core.paths import mas_root
 ROOT = mas_root()
 
 try:
@@ -1302,17 +1301,47 @@ class MetricsEngine:
         (per evaluation_policy.yaml → communication_efficiency). Low scores are the
         signal that training_engine turns into communication_waste proposals."""
         wf = shared_state.get("workflow", {}) or {}
-        comm = shared_state.get("communication", {}) or {}
         consultation = shared_state.get("consultation", {}) or {}
         handoff_history = wf.get("handoff_history", []) or []
         phase_count = max(1, len(wf.get("completed_phases", []) or []))
         consultation_responses = consultation.get("consultation_responses", []) or []
         decisions_made = len((shared_state.get("decisions", {}) or {}).get("decision_log", []) or [])
+        prompt_context_counts: list[int] = []
+        total_prompt_estimates = 0
+        project_id = (
+            shared_state.get("core_identity", {}) or {}
+        ).get("project_id")
+        if project_id:
+            try:
+                from core.db import query_events
+
+                rows = query_events(
+                    project_id=project_id,
+                    action_type="prompt_estimated",
+                    limit=100,
+                )
+                for row in rows:
+                    payload = json.loads(row.get("payload") or "{}")
+                    payload = payload.get("params", {}).get("inputs", payload)
+                    components = payload.get("components", {}) or {}
+                    context_tokens = sum(
+                        int(components.get(name, 0) or 0)
+                        for name in ("state", "memory", "skills", "runtime")
+                    )
+                    total = int(payload.get("total_estimated_tokens", 0) or 0)
+                    if total > 0:
+                        prompt_context_counts.append(context_tokens)
+                        total_prompt_estimates += total
+            except Exception:
+                prompt_context_counts = []
+                total_prompt_estimates = 0
 
         metrics = [
             self.score_token_efficiency(handoff_history, phase_count),
             self.score_payload_density(handoff_history),
-            self.score_context_injection_efficiency([], comm.get("total_tokens_used", 0) or 1),
+            self.score_context_injection_efficiency(
+                prompt_context_counts, total_prompt_estimates
+            ),
             self.score_consultation_overhead(consultation_responses, decisions_made),
         ]
         applicable = [m for m in metrics if m.mode != "not_applicable"]

@@ -62,3 +62,22 @@ uv run python mas/tools/roster_sync.py --dry-run  # preview
 ```
 
 Reference: ip-002 / proj-YYYYMMDD-NNN.
+
+## `mas/tools/purge_test_noise.py`
+
+Classifies and optionally removes explicit test/scratch project rows from the
+runtime event and shared-state tables. It understands nested family/project
+folders and classifies a real workspace by its leaf project id, preventing a
+family name from causing a false purge.
+
+```bash
+# Preview exact row classification
+uv run python mas/tools/purge_test_noise.py
+
+# Apply only after reviewing the preview
+uv run python mas/tools/purge_test_noise.py --apply
+```
+
+Every apply creates a consistent SQLite online backup under
+`mas/data/backups/` before deletion. Retain that path in the cleanup evidence and
+verify database integrity afterward with `uv run mas doctor`.

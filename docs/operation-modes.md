@@ -109,13 +109,24 @@ For the manual flow, get the assembled prompt for the next agent:
 ```bash
 mas prompt <project-id>                # next agent auto-detected
 mas prompt <project-id> inquirer_agent # specific agent
+mas prompt <project-id> product_manager_agent --surface claude --json
+mas ingest <project-id> --agent product_manager_agent \
+  --dispatch-id <id> --reported-provider anthropic \
+  --reported-model claude-fable-5 --verification-source client < reply.txt
 ```
 
-Manual mode records token cost as telemetry even though MAS is not calling the
-model API directly. `mas prompt` estimates input tokens from the assembled prompt,
-`mas ingest` estimates completion tokens from the pasted response, and
-`mas log-tokens` remains available for exact provider/surface counts or manual
-corrections.
+Manual mode records telemetry even though MAS is not calling the model API
+directly. `mas prompt` records a non-billable preview estimate from the assembled
+prompt; repeated previews do not become observed calls. `mas ingest` records an
+observed response with heuristic token counting. Use `mas log-tokens` for exact
+provider/surface counts or corrections, including `--cached-input`,
+`--cache-write`, and `--billable-input`.
+
+Selection is not execution proof. Planning roles retain `reasoning`; Claude
+selects Fable first and Opus 4.8 only for exclusion/unavailability or refusal,
+while other clients resolve through their catalog. Reasoning state changes
+require a matching receipt. Client/operator receipts are attestations;
+autonomous provider-reported model identities are checked directly.
 
 For behaviorally disciplined work, each surface should let MAS choose the next
 agent instead of manually skipping phases: start with `mas prompt <project-id>`,

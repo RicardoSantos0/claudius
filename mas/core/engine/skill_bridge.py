@@ -45,7 +45,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
         "writing-guidelines", "find-skills",
     ],
     "inquirer_agent": [
-        "research-extract", "mas-clarify",
+        "research-extract", "mas-clarify", "notebooklm",
         "adaptive-communication", "find-skills",
     ],
     "product_manager_agent": [
