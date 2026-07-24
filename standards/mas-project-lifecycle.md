@@ -55,11 +55,15 @@ Lite collapses intake+specification and skips the consultant review phase. Still
 **Exit artifact:** `planning/execution_plan.yaml`
 **Pre-execution gate:** Master must populate `project_definition.acceptance_criteria` and `decisions.decision_log` before this phase closes.
 **Test-first gate:** Execution plan must schedule test-definition tasks before implementation tasks, and implementation tasks must depend on the relevant test-definition task IDs.
+**Identifier contract:** Plan milestone/task IDs and dependency references must
+match the canonical IDs materialized in `execution/task_board.yaml`. Do not
+maintain human-short aliases beside generated `ms-*` / `task-*` IDs: evaluation
+reconciliation treats different IDs as different work and preserves both.
 
 ### capability_discovery
 **Goal:** Identify which agents exist for the required capabilities; certify gaps.
 **Owner:** `hr_agent`
-**Exit artifact:** `hr/deployment_plan.yaml`
+**Exit artifact:** `governance/deployment_plan.yaml`
 **Key rules:**
 - HR produces the DeploymentPlan; Master executes it
 - Master may not re-derive routing independently
@@ -72,6 +76,22 @@ Lite collapses intake+specification and skips the consultant review phase. Still
 **Exit artifact:** All deliverable files confirmed on disk
 **Verification:** Master must verify every claimed file before accepting completion handoffs.
 
+## Transition Harness
+
+All manual/MCP phase changes use `lifecycle_guard.check_phase_transition` before
+state or handoff mutation. The guard applies the artifact contract for the phase
+being exited and composes the standard-mode execution-entry task-board gate.
+After a valid transition, the manual loop:
+
+1. snapshots the departing phase;
+2. records it once in `workflow.completed_phases`;
+3. updates `current_phase`; and
+4. emits one typed `phase_transition` event.
+
+Wire-protocol `decisions_made` and `artifacts_produced` are projected into
+canonical state, and each `sk_used` entry emits a `skill_completed` event. A
+rejected transition leaves state, handoffs, and the event log unchanged.
+
 ### review
 **Goal:** Spawn opportunity review before evaluation.
 **Owner:** `master_orchestrator`
@@ -82,6 +102,12 @@ Lite collapses intake+specification and skips the consultant review phase. Still
 **Owner:** `evaluator_agent`
 **Exit artifact:** `evaluation/project_evaluation.yaml`
 **Scoring fields:** `acceptance_criteria_pass_rate`, `goal_achievement`, `decision_quality`, `documentation_completeness`
+**Entry gate:** Reconcile the approved `planning/execution_plan.yaml` into
+`shared_state.execution.tasks` and `shared_state.execution.milestones` before scoring.
+Existing progress is authoritative and must not be reset. Unapproved plans and dangling
+task, dependency, or milestone references fail closed. A pre-evaluation
+consistency check must also confirm that plan and task-board IDs are identical;
+semantic duplicates with different IDs are record drift, not extra tasks.
 **Consultation gate:** `risk_advisor`, `quality_advisor`, and `efficiency_advisor` review evaluation evidence before Master accepts final conclusions or closes the project.
 
 ### improvement

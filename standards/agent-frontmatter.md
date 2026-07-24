@@ -15,7 +15,8 @@ All agent `.md` files must include a YAML frontmatter block at the top:
 name: <claude-facing-name>
 description: <one-line description of what the agent does>
 tools: Read, Grep, Glob, Bash, Agent
-model: <model-name>
+model: inherit
+model_profile: auto
 ---
 ```
 
@@ -26,7 +27,8 @@ model: <model-name>
 | `name` | string | Claude Code-facing agent name (lowercase hyphenated) |
 | `description` | string | One-line description of the agent's purpose |
 | `tools` | comma-separated | Tools the agent is authorized to use |
-| `model` | string | Model to use (or omit to inherit from system_config.yaml) |
+| `model` | string | Use `inherit`; explicit IDs are legacy compatibility overrides |
+| `model_profile` | string | Use `auto` so phase, risk, retry, and surface policy choose the semantic tier |
 
 ### Naming Convention
 
@@ -49,14 +51,16 @@ WebFetch  WebSearch
 
 Use only these exact names. Do not invent tool names.
 
-### Model Names
+### Model Routing
 
 ```text
-opus      sonnet    haiku
+model: inherit
+model_profile: auto
 ```
 
-Or use the full model ID. Prefer short names when using the default model for that tier.
-Model assignments are governed by `mas/system_config.yaml`.
+Do not pin vendor model names in agent prompts. Model assignments are governed by
+the phase-aware profiles and provider catalogs in `mas/system_config.yaml`. An
+explicit model is reserved for a documented compatibility exception.
 
 ---
 
@@ -89,7 +93,8 @@ Keeping MAS metadata out of frontmatter prevents prompt bloat and allows registr
 name: master-orchestrator
 description: Coordinates MAS phases, governance, delegation, handoffs, consultation, and escalation.
 tools: Read, Grep, Glob, Bash, Agent
-model: opus
+model: inherit
+model_profile: auto
 ---
 ```
 
@@ -101,7 +106,8 @@ master_orchestrator:
   claude_name: master-orchestrator
   trust_tier: T0
   status: active
-  model: opus
+  model: ""
+  model_profile: auto
   tools: [Read, Grep, Glob, Bash, Agent]
   domains: [orchestration, governance, planning]
   roles: [coordinator, phase-manager]

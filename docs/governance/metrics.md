@@ -35,6 +35,9 @@ evaluation:
       - mas/core/engine/handoff_engine.py
       - mas/tests/unit/test_handoff_engine.py
       - mas/CHANGELOG.md
+    coverage_mappings:
+      mas/core/server.py:
+        - mas/tests/unit/test_mcp_server.py
 ```
 
 When `changed_files` is empty or absent, the metric returns `mode='not_applicable'` and is excluded from the average.
@@ -44,7 +47,10 @@ When `changed_files` is empty or absent, the metric returns `mode='not_applicabl
 1. Filter docs (`.md`, `.rst`, `.txt`, anything under `docs/`, `CHANGELOG.md`) and config (`.yaml`, `.yml`, `.toml`, `.cfg`, `.ini`, `.json`) out of the impl set.
 2. The impl set = `.py` files not under `tests/`, not starting with `test_`, not ending with `_test.py`.
 3. The test set = anything under `tests/` plus any file whose basename starts with `test_` or ends with `_test.py`.
-4. For each impl file `P`, it is **paired** iff any test-set path mentions `P`'s module basename (filename without extension) as a substring.
+4. For each impl file `P`, it is **paired** when either a changed test mentions
+   `P`'s module basename or `coverage_mappings[P]` names a test that is also in the
+   changed set. Both sides of an explicit mapping must be changed; path separators
+   are normalized.
 5. Score = `paired / impl_total × 100`.
 
 Edge cases:
@@ -62,9 +68,10 @@ Edge cases:
 
 ### Implementation
 
-- Function: `MetricsEngine.score_test_drift_detection(changed_files)` (pure).
-- Wired into `MetricsEngine.evaluate_project()` via `shared_state.evaluation.test_drift_context.changed_files`.
-- Tests: `mas/tests/unit/test_test_drift_detection_metric.py` (5 cases — N.A., docs-only, paired, unpaired, partial).
+- Function: `MetricsEngine.score_test_drift_detection(changed_files, coverage_mappings)` (pure).
+- Wired into `MetricsEngine.evaluate_project()` through `evaluation.test_drift_context`.
+- Private development tests cover default and explicit-mapping cases; this public
+  distribution intentionally ships only its fresh-install smoke suite.
 
 ### Reference
 

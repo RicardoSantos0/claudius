@@ -45,7 +45,7 @@ uv run pytest mas/tests/            # Run the full test suite
 | Mode | How | When |
 |------|-----|------|
 | **Claude Code manual orchestration** | Use `uv run mas prompt <project-id> [agent]` plus Claude Code agents / manual wire application | Primary no-API workflow |
-| **`mas run` CLI** | `uv run mas run <project-id>` drives the live loop autonomously | Requires `ANTHROPIC_API_KEY` with credits |
+| **`mas run` CLI** | `uv run mas run <project-id>` drives the live loop autonomously | Requires the selected catalog's credential and adapter extra |
 
 Claude Code is the primary workflow for this environment. The Python engine handles state, handoffs, and governance; Claude Code is the manual agent invoker.
 
@@ -53,7 +53,21 @@ To get the assembled prompt for any agent (useful in Claude Code mode):
 ```bash
 uv run mas prompt <project-id>                # next agent auto-detected
 uv run mas prompt <project-id> inquirer_agent # specific agent
+uv run mas prompt <project-id> product_manager_agent --surface claude --json
 ```
+
+`mas prompt` records a non-billable preview estimate, not an observed model call.
+`mas ingest` records the observed manual response with heuristic counting; use
+`mas log-tokens` for exact provider/cache fields. Prompt envelopes expose a
+provider-neutral stable-prefix fingerprint for adapter-level caching. See
+`docs/architecture/prompt-token-contract.md`.
+
+Apply the envelope model when invoking every manual agent, then return its
+`dispatch_id`, actual provider, and actual model through `mas ingest`. Planning
+roles use Fable first on Claude and Opus 4.8 only when Fable is
+excluded/unavailable or refuses. A client/operator receipt is an attestation;
+selection alone is not execution proof. See
+`docs/architecture/model-routing.md`.
 
 ## Agent Network
 
@@ -83,6 +97,7 @@ Invoke `master_orchestrator` to start a project. It coordinates all other agents
 ```bash
 uv run python mas/tools/roster_sync.py            # apply
 uv run python mas/tools/roster_sync.py --dry-run  # preview
+uv run python mas/core/engine/capability_registry.py sync-db-from-yaml
 ```
 
 `mas registry seed` (auto-run on project close) also refreshes registry tables, but `roster_sync.py` is the targeted, fast path when only agents have changed. Reference: ip-002 / proj-YYYYMMDD-NNN.

@@ -45,6 +45,8 @@ folder_structure:
     data:
       files:
         - episodic.db              # SQLite: agent_events (+FTS), agent_graph, shared_states, registry tables (gitignored runtime state)
+      subdirs:
+        - backups                  # Gitignored online SQLite/recovery archives created before destructive maintenance
 
     tools:
       files:

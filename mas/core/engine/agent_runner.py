@@ -40,9 +40,10 @@ from __future__ import annotations
 
 import os
 import logging
+import time
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 # Load .env from repo root so ANTHROPIC_API_KEY is available in all entry points
 try:
@@ -71,6 +72,44 @@ _NON_RETRYABLE = (
 )
 
 
+def _classify_error(error: object) -> str:
+    """Map provider-specific prose to the small dispatch failure taxonomy."""
+    value = str(error or "").strip().lower()
+    if "refusal" in value or "refused" in value:
+        return "refusal"
+    model_markers = (
+        "model",
+        "deployment",
+    )
+    unavailable_markers = (
+        "not available",
+        "unavailable",
+        "not found",
+        "does not exist",
+        "not allowed",
+        "no access",
+        "not part of",
+        "unsupported",
+    )
+    if any(marker in value for marker in model_markers) and any(
+        marker in value for marker in unavailable_markers
+    ):
+        return "model_unavailable"
+    if "rate_limit" in value or "rate limit" in value or "429" in value:
+        return "rate_limited"
+    if any(
+        marker in value
+        for marker in ("timeout", "timed out", "overloaded", "503", "502", "500")
+    ):
+        return "transient"
+    if any(
+        marker in value
+        for marker in ("authentication_error", "permission_error", "credit balance")
+    ):
+        return "provider_authorization"
+    return "provider_error"
+
+
 def _resolve_provider() -> str:
     """Provider from env (MAS_PROVIDER), else the historical default 'anthropic'."""
     return (os.getenv("MAS_PROVIDER") or DEFAULT_PROVIDER).strip().lower()
@@ -82,6 +121,62 @@ def _resolve_base_url() -> str:
     Set this to target a local/open endpoint (Ollama http://localhost:11434/v1,
     LM Studio, Opencode, vLLM) through the 'openai' provider."""
     return (os.getenv("MAS_OPENAI_BASE_URL") or "").strip()
+
+
+def _field(value: object, name: str) -> Any:
+    if isinstance(value, Mapping):
+        return value.get(name)
+    return getattr(value, name, None)
+
+
+def _first_value(value: object, *names: str) -> Any:
+    for name in names:
+        candidate = _field(value, name)
+        if candidate is not None:
+            return candidate
+    return None
+
+
+def _usage_metadata(response: object, usage: object) -> dict[str, Any]:
+    """Normalize provider SDK metadata without reading prompt/response content."""
+    prompt_details = _first_value(
+        usage, "prompt_tokens_details", "input_tokens_details"
+    )
+    metadata = {
+        "tokens_prompt": _first_value(usage, "input_tokens", "prompt_tokens"),
+        "tokens_completion": _first_value(
+            usage, "output_tokens", "completion_tokens"
+        ),
+        "cached_input_tokens": _first_value(
+            usage, "cache_read_input_tokens", "cached_input_tokens"
+        ),
+        "cache_creation_input_tokens": _first_value(
+            usage, "cache_creation_input_tokens", "cache_write_input_tokens"
+        ),
+        "billable_input_tokens": _first_value(
+            usage, "billable_input_tokens"
+        ),
+        "provider_request_id": _first_value(
+            response, "_request_id", "request_id", "id"
+        ),
+    }
+    if metadata["cached_input_tokens"] is None and prompt_details is not None:
+        metadata["cached_input_tokens"] = _first_value(
+            prompt_details, "cached_tokens", "cache_read_tokens"
+        )
+    normalized: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if value is None:
+            continue
+        if key in {"tokens_prompt", "tokens_completion"} or key.endswith("_tokens"):
+            normalized[key] = max(0, int(value))
+        else:
+            from core.engine.route_telemetry import sanitize_route_metadata
+
+            safe_value = sanitize_route_metadata({key: value}).get(key)
+            if safe_value:
+                normalized[key] = safe_value
+    return normalized
 
 
 # --- Provider adapter seam ----------------------------------------------------
@@ -105,7 +200,10 @@ class ProviderAdapter(ABC):
         """Return a live client object, or None when the provider is unavailable."""
 
     @abstractmethod
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         """Run one call; return {text, tokens_used, model, provider[, tokens_prompt,
         tokens_completion][, error]}."""
 
@@ -125,8 +223,11 @@ class _AnthropicAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
-        _ = agent_id
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
+        _ = agent_id, reasoning_effort
         kwargs: dict = {
             "model": model,
             "max_tokens": max_tokens,
@@ -136,17 +237,32 @@ class _AnthropicAdapter(ProviderAdapter):
             kwargs["system"] = system_prompt
         try:
             msg = client.messages.create(**kwargs)
+            if str(getattr(msg, "stop_reason", "") or "").lower() == "refusal":
+                return {
+                    "text": "",
+                    "tokens_used": 0,
+                    "model": model,
+                    "provider": "anthropic",
+                    "error": "provider returned refusal stop reason",
+                    "error_type": "refusal",
+                }
             text = msg.content[0].text if msg.content else ""
-            tp = msg.usage.input_tokens or 0
-            tc = msg.usage.output_tokens or 0
+            usage = _usage_metadata(msg, msg.usage)
+            tp = int(usage.get("tokens_prompt", 0))
+            tc = int(usage.get("tokens_completion", 0))
+            reported_model = getattr(msg, "model", None)
             return {
                 "text": text, "tokens_used": tp + tc,
                 "tokens_prompt": tp, "tokens_completion": tc,
-                "model": model, "provider": "anthropic",
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": "anthropic",
+                **usage,
             }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": "anthropic", "error": str(exc)}
+                    "provider": "anthropic", "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 class _OpenAIAdapter(ProviderAdapter):
@@ -172,20 +288,40 @@ class _OpenAIAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         _ = agent_id
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
+        kwargs = {"model": model, "max_tokens": max_tokens, "messages": messages}
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         try:
-            resp = client.chat.completions.create(model=model, max_tokens=max_tokens, messages=messages)
+            resp = client.chat.completions.create(**kwargs)
             text = resp.choices[0].message.content or ""
-            tokens = resp.usage.total_tokens if resp.usage else 0
-            return {"text": text, "tokens_used": tokens, "model": model, "provider": self.name}
+            usage = _usage_metadata(resp, resp.usage) if resp.usage else {}
+            tokens = (
+                int(_field(resp.usage, "total_tokens") or 0)
+                if resp.usage
+                else 0
+            )
+            reported_model = getattr(resp, "model", None)
+            return {
+                "text": text,
+                "tokens_used": tokens,
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": self.name,
+                **usage,
+            }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": self.name, "error": str(exc)}
+                    "provider": self.name, "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 class _LiteLLMAdapter(ProviderAdapter):
@@ -203,13 +339,18 @@ class _LiteLLMAdapter(ProviderAdapter):
         except ImportError:
             return None
 
-    def call(self, client, *, agent_id, prompt, system_prompt, model, max_tokens) -> dict:
+    def call(
+        self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
+        reasoning_effort=None,
+    ) -> dict:
         _ = agent_id
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
         kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
         base_url = _resolve_base_url()
         if base_url:
             kwargs["api_base"] = base_url
@@ -217,11 +358,28 @@ class _LiteLLMAdapter(ProviderAdapter):
             resp = client.completion(**kwargs)
             text = resp.choices[0].message.content or ""
             usage = getattr(resp, "usage", None)
-            tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage else 0
-            return {"text": text, "tokens_used": tokens, "model": model, "provider": "litellm"}
+            tokens = int(_field(usage, "total_tokens") or 0) if usage else 0
+            metadata = _usage_metadata(resp, usage) if usage else {}
+            hidden_params = _field(resp, "_hidden_params") or {}
+            if "provider_request_id" not in metadata:
+                request_id = _first_value(
+                    hidden_params, "api_call_id", "request_id"
+                )
+                if request_id:
+                    metadata["provider_request_id"] = str(request_id)
+            reported_model = getattr(resp, "model", None)
+            return {
+                "text": text,
+                "tokens_used": tokens,
+                "model": reported_model or model,
+                "reported_model": reported_model,
+                "provider": "litellm",
+                **metadata,
+            }
         except Exception as exc:
             return {"text": "", "tokens_used": 0, "model": model,
-                    "provider": "litellm", "error": str(exc)}
+                    "provider": "litellm", "error": str(exc),
+                    "error_type": _classify_error(exc)}
 
 
 register_adapter(_AnthropicAdapter())
@@ -241,10 +399,16 @@ class AgentRunner:
         model: str = DEFAULT_MODEL,
         db_path: Optional[Path] = None,
         provider: Optional[str] = None,
+        route_selection: Optional[dict] = None,
+        reasoning_effort: Optional[str] = None,
     ):
         self.model = model
         self.provider = (provider or _resolve_provider()).strip().lower()
         self._db_path = db_path
+        self._route_selection = route_selection or {}
+        self.reasoning_effort = (
+            reasoning_effort or self._route_selection.get("reasoning_effort")
+        )
         self._adapter = _ADAPTERS.get(self.provider)
         self._client = self._adapter.init_client() if self._adapter else None
 
@@ -288,40 +452,152 @@ class AgentRunner:
         if self._adapter is None:
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": f"unsupported_provider: {self.provider}", "retryable": False,
+                "error": f"unsupported_provider: {self.provider}",
+                "error_type": "unsupported_provider",
+                "retryable": False,
             }
 
         if not self.available:
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": self._unavailable_msg(), "retryable": False,
+                "error": self._unavailable_msg(),
+                "error_type": "provider_unavailable",
+                "retryable": False,
             }
 
-        result = self._adapter.call(
-            self._client, agent_id=agent_id, prompt=prompt,
-            system_prompt=system_prompt, model=self.model, max_tokens=max_tokens,
-        )
+        started = time.perf_counter()
+        try:
+            result = self._adapter.call(
+                self._client, agent_id=agent_id, prompt=prompt,
+                system_prompt=system_prompt, model=self.model, max_tokens=max_tokens,
+                reasoning_effort=self.reasoning_effort,
+            )
+        except Exception:
+            self._record_route_telemetry(
+                project_id=project_id,
+                agent_id=agent_id,
+                latency_ms=(time.perf_counter() - started) * 1000,
+                success=False,
+                error_type="provider_exception",
+            )
+            raise
+        latency_ms = (time.perf_counter() - started) * 1000
 
         if result.get("error"):
             error_str = result["error"]
-            retryable = not any(m in error_str.lower() for m in _NON_RETRYABLE)
+            error_type = str(
+                result.get("error_type") or _classify_error(error_str)
+            )
+            retryable = (
+                error_type in {"rate_limited", "transient", "provider_error"}
+                and not any(m in error_str.lower() for m in _NON_RETRYABLE)
+            )
+            self._record_route_telemetry(
+                project_id=project_id,
+                agent_id=agent_id,
+                latency_ms=latency_ms,
+                success=False,
+                error_type=error_type,
+            )
             return {
                 "text": "", "tokens_used": 0, "model": self.model,
-                "error": error_str, "retryable": retryable,
+                "error": error_str,
+                "error_type": error_type,
+                "retryable": retryable,
             }
+
+        reported_model = result.get("reported_model")
+        reported_provider = str(result.get("provider") or self.provider)
+        approved_candidates = self._route_selection.get("candidates", []) or []
+        if reported_model and approved_candidates:
+            approved_routes = {
+                (
+                    str(candidate.get("provider") or "").lower(),
+                    str(candidate.get("model") or "").lower(),
+                )
+                for candidate in approved_candidates
+                if isinstance(candidate, dict)
+            }
+            reported_route = (
+                reported_provider.lower(),
+                str(reported_model).lower(),
+            )
+            if reported_route not in approved_routes:
+                self._record_route_telemetry(
+                    project_id=project_id,
+                    agent_id=agent_id,
+                    latency_ms=latency_ms,
+                    success=False,
+                    error_type="model_mismatch",
+                    provider_reported_model=str(reported_model),
+                    provider_request_id=result.get("provider_request_id"),
+                )
+                return {
+                    "text": "",
+                    "tokens_used": 0,
+                    "model": self.model,
+                    "reported_model": reported_model,
+                    "error": (
+                        "provider-reported route is outside approved dispatch "
+                        f"candidates: {reported_provider}/{reported_model}"
+                    ),
+                    "error_type": "model_mismatch",
+                    "retryable": False,
+                    "verification_status": "mismatch",
+                }
 
         tp = int(result.get("tokens_prompt", 0) or 0)
         tc = int(result.get("tokens_completion", 0) or 0)
         if not tp and not tc:  # providers that report only a total
             tc = int(result.get("tokens_used", 0) or 0)
-        self._log_event(project_id, agent_id, prompt,
-                        tokens_prompt=tp, tokens_completion=tc)
+        self._log_event(
+            project_id,
+            agent_id,
+            tokens_prompt=tp,
+            tokens_completion=tc,
+            result=result,
+        )
+        self._record_route_telemetry(
+            project_id=project_id,
+            agent_id=agent_id,
+            latency_ms=latency_ms,
+            success=True,
+            input_tokens=tp,
+            output_tokens=tc,
+            cached_input_tokens=result.get("cached_input_tokens"),
+            cache_creation_input_tokens=result.get(
+                "cache_creation_input_tokens"
+            ),
+            billable_input_tokens=result.get("billable_input_tokens"),
+            provider_reported_model=(
+                str(reported_model) if reported_model else None
+            ),
+            provider_request_id=result.get("provider_request_id"),
+            cost_usd=result.get("cost_usd"),
+            quality_score=result.get("quality_score"),
+        )
 
-        return {
+        response = {
             "text": result.get("text", ""),
             "tokens_used": result.get("tokens_used", 0),
-            "model": self.model,
+            "tokens_prompt": tp,
+            "tokens_completion": tc,
+            "model": result.get("model") or self.model,
+            "provider": reported_provider,
+            "reported_model": reported_model,
+            "verification_status": (
+                "provider_reported" if reported_model else "unverified"
+            ),
         }
+        for key in (
+            "provider_request_id",
+            "cached_input_tokens",
+            "cache_creation_input_tokens",
+            "billable_input_tokens",
+        ):
+            if result.get(key) is not None:
+                response[key] = result[key]
+        return response
 
     # ------------------------------------------------------------------
     # SQLite logging
@@ -331,9 +607,9 @@ class AgentRunner:
         self,
         project_id: str,
         agent_id: str,
-        prompt: str,
         tokens_prompt: int = 0,
         tokens_completion: int = 0,
+        result: Mapping[str, Any] | None = None,
     ) -> None:
         """Write an agent_call event to SQLite. Non-fatal."""
         if not project_id:
@@ -344,11 +620,22 @@ class AgentRunner:
             if self._db_path:
                 kwargs["db_path"] = self._db_path
             tokens_total = tokens_prompt + tokens_completion
+            provider_metadata = {
+                key: (result or {}).get(key)
+                for key in (
+                    "reported_model",
+                    "provider_request_id",
+                    "cached_input_tokens",
+                    "cache_creation_input_tokens",
+                    "billable_input_tokens",
+                )
+                if (result or {}).get(key) is not None
+            }
             append_event(
                 project_id=project_id,
                 agent_id=agent_id,
                 action_type="agent_call",
-                intent=prompt[:120],
+                intent="Agent provider call completed",
                 result_shape=f"tokens={tokens_total}",
                 payload={
                     "model":             self.model,
@@ -356,8 +643,78 @@ class AgentRunner:
                     "tokens_prompt":     tokens_prompt,
                     "tokens_completion": tokens_completion,
                     "tokens_total":      tokens_total,
+                    "route_selection":   self._route_selection,
+                    "reasoning_effort":  self.reasoning_effort,
+                    "measurement_source": "provider_reported",
+                    **provider_metadata,
                 },
                 **kwargs,
             )
         except Exception as exc:
             logger.debug("agent-runner telemetry failed (non-blocking): %s", exc)
+
+    def _record_route_telemetry(
+        self,
+        *,
+        project_id: str,
+        agent_id: str,
+        latency_ms: float,
+        success: bool,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cached_input_tokens: object = None,
+        cache_creation_input_tokens: object = None,
+        billable_input_tokens: object = None,
+        provider_reported_model: str | None = None,
+        provider_request_id: object = None,
+        cost_usd: object = None,
+        quality_score: object = None,
+        error_type: str | None = None,
+    ) -> None:
+        """Record metadata only; never accept prompt, response, or credential data."""
+        if not project_id:
+            return
+        try:
+            from core.db import record_route_telemetry
+
+            source = str(self._route_selection.get("source") or "")
+            metadata = {
+                "project_id": project_id,
+                "agent_id": agent_id,
+                "route_action_id": self._route_selection.get("route_action_id"),
+                "dispatch_id": self._route_selection.get("dispatch_id"),
+                "provider_catalog": self._route_selection.get("provider_catalog"),
+                "provider": self.provider,
+                "model": self.model,
+                "provider_reported_model": provider_reported_model,
+                "provider_request_id": provider_request_id,
+                "profile": self._route_selection.get("profile"),
+                "phase": self._route_selection.get("phase"),
+                "source": source,
+                "verification_source": "provider",
+                "stable_prefix_sha256": self._route_selection.get(
+                    "stable_prefix_sha256"
+                ),
+                "retry_count": self._route_selection.get("retry_count", 0),
+                "escalated": source in {
+                    "critical_agent", "risk_escalation", "retry_escalation"
+                },
+                "latency_ms": float(latency_ms),
+                "input_tokens": int(input_tokens),
+                "output_tokens": int(output_tokens),
+                "cached_input_tokens": cached_input_tokens,
+                "cache_creation_input_tokens": cache_creation_input_tokens,
+                "billable_input_tokens": billable_input_tokens,
+                "cost_usd": float(cost_usd) if cost_usd is not None else None,
+                "quality_score": (
+                    float(quality_score) if quality_score is not None else None
+                ),
+                "success": bool(success),
+                "error_type": error_type,
+            }
+            kwargs: dict = {}
+            if self._db_path:
+                kwargs["db_path"] = self._db_path
+            record_route_telemetry(metadata, **kwargs)
+        except Exception as exc:
+            logger.debug("route telemetry failed (non-blocking): %s", exc)

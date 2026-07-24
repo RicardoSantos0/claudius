@@ -155,7 +155,11 @@ evaluation_policy:
       not_applicable: "No module-level constants or defaults changed in the project diff"
     detection_method: >
       Evaluator scans the execution diff for lines matching DEFAULT_, default=, or enum value
-      assignments. For each changed value, greps tests/ for the old string. Mismatch → finding.
+      assignments. Basename-paired tests remain the fallback. Evaluator may also provide
+      evaluation.test_drift_context.coverage_mappings, mapping an implementation path to
+      differently named behavior tests. An explicit mapping counts only when both the
+      implementation path and at least one mapped test path occur in changed_files.
+      Paths are separator-normalized before comparison. Mismatch → finding.
     delivery_agent_obligation: >
       canonical_engineer, integration_engineer, and reliability_engineer MUST grep tests/ for
       the old value before committing any constant change (TP-007). Evaluator scores the outcome;

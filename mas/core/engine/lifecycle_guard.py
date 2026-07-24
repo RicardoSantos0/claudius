@@ -307,3 +307,26 @@ def check_execution_entry(
         entry["severity"] = "warn"
         return GuardResult(passed=True, warnings=[entry])
     return GuardResult(passed=False, violations=[entry])
+
+
+def check_phase_transition(
+    *,
+    phase: str,
+    target_phase: str,
+    mode: str,
+    project_dir: Path,
+    task_board_data: dict | None = None,
+) -> GuardResult:
+    """Apply the shared exit-artifact and execution-entry transition contract."""
+    artifact_result = LifecycleGuard().check_phase_artifacts(phase, project_dir)
+    violations = list(artifact_result.violations)
+    warnings = list(artifact_result.warnings)
+    if target_phase == "execution":
+        execution_result = check_execution_entry(task_board_data, mode=mode)
+        violations.extend(execution_result.violations)
+        warnings.extend(execution_result.warnings)
+    return GuardResult(
+        passed=not violations,
+        violations=violations,
+        warnings=warnings,
+    )
