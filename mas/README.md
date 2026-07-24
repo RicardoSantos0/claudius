@@ -56,7 +56,10 @@ through a formal protocol; every decision, artifact, and phase transition is rec
 intake → specification → planning → capability_discovery → execution → review → evaluation → improvement → closed
 ```
 
-Every phase transition requires a Scribe handoff to be accepted before `current_phase` advances (blocking gate, TP-011).
+Every phase transition uses the same lifecycle harness. The current phase's
+artifact contract must pass, and entry to standard-mode execution additionally
+requires a populated canonical task board. A valid manual-loop transition writes
+a phase snapshot, updates `current_phase`, and emits one typed transition event.
 
 ### Formal Handoff Protocol
 
@@ -95,7 +98,7 @@ Event log for all handoff lifecycle events.
 | id | INTEGER PK | Auto-increment row ID |
 | project_id | TEXT | Project this event belongs to |
 | agent_id | TEXT | Agent that triggered the event |
-| action_type | TEXT | `handoff_created`, `handoff_accepted`, `handoff_rejected`, `agent_call` |
+| action_type | TEXT | Typed event such as `handoff_created`, `phase_transition`, `prompt_estimated`, `agent_call`, or `skill_completed` |
 | timestamp | TEXT | ISO-8601 UTC |
 | intent | TEXT | Human-readable task description |
 | result_shape | TEXT | Shape of the outcome (e.g., `handoff`) |
@@ -135,17 +138,25 @@ Directed edges between graph nodes.
 
 ---
 
-## Cross-Project Memory
+## Prompt Context and Cross-Project Memory
 
-Agents **do** query the DB for memory of previous projects via `graph_memory.py`.
+`prompt_assembler.py` queries the SQL event store using the active phase, target
+area, and project goal. It injects at most three deduplicated results, excludes
+generic reconciled transition noise, and prefers relevant project history over a
+blind recent-event tail. SQLite FTS5 provides local search; configured SQL/vector
+backends can provide the equivalent retrieval path.
 
-Every `write_episode()` call mirrors facts to a special `__global__` graph overlay stored in SQLite. When any agent calls `query(agent_id, context)`:
+Prompt previews are recorded separately from observed model calls. Each prompt
+envelope includes component estimates and a stable-prefix fingerprint so a
+provider adapter can cache the stable agent template while keeping state, memory,
+skills, and runtime context in the volatile tail. See
+[`docs/architecture/prompt-token-contract.md`](../docs/architecture/prompt-token-contract.md).
 
-1. Local facts from the current project's graph are retrieved.
-2. Global facts from the `__global__` overlay are retrieved and tagged `scope: global`.
-3. Both sets are returned together as a prompt injection (≤300 tokens by default).
-
-This means agents can recall decisions, findings, and proposals from past projects without being given the project ID explicitly. The `agent_events` FTS5 index also supports keyword search across all 25 recorded projects.
+Dispatch envelopes also carry an ordered candidate list and `dispatch_id`.
+Planning roles retain `reasoning`; Anthropic uses Fable first and Opus 4.8 only
+for declared unavailability/refusal. Manual reasoning outputs must return a
+matching provider/model receipt before state-changing actions are accepted.
+Client/operator receipts are attestations, not provider proof.
 
 ---
 
@@ -155,7 +166,7 @@ This means agents can recall decisions, findings, and proposals from past projec
 |------|---------|
 | `mas/core/engine/handoff_engine.py` | Formal handoff create/accept/reject |
 | `mas/core/engine/shared_state_manager.py` | Field-access-controlled shared state |
-| `mas/core/engine/graph_memory.py` | Knowledge graph + cross-project memory |
+| `mas/core/engine/prompt_assembler.py` | Bounded SQL-backed context retrieval and cache-ready prompt assembly |
 | `mas/core/engine/capability_registry.py` | HR agent capability search and scoring |
 | `mas/core/db.py` | SQLite event append and query layer |
 | `mas/roster/registry_index.yaml` | Agent roster + capability vocabulary |

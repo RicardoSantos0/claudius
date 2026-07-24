@@ -3,6 +3,12 @@
 How the parts of this repository fit together. This is a map, not a tutorial —
 for run instructions see [operation-modes.md](operation-modes.md).
 
+Companion contracts:
+
+- [Surface compatibility contract](architecture/surface-compatibility-contract.md)
+- [Runtime storage contract](architecture/runtime-storage-contract.md)
+- [Prompt token and caching contract](architecture/prompt-token-contract.md)
+
 ## Two layers
 
 The repo is two cooperating layers that share one tree:
@@ -117,8 +123,10 @@ intake → specification → planning → capability_discovery → execution
        → review → evaluation → improvement → closed
 ```
 
-Each standard phase transition requires: exit criteria verified by Master, a shared
-state snapshot, and the phase recorded in `workflow.completed_phases`.
+Each standard transition is checked by the shared lifecycle guard. The departing
+phase's artifact contract must pass; standard-mode execution also requires a
+populated task board. A valid manual-loop transition then writes the snapshot,
+updates `workflow.completed_phases`, and emits one typed transition event.
 
 Project IDs follow `proj-{YYYYMMDD}-{NNN}-{slug}`, and the project folder name
 matches the ID.
@@ -132,7 +140,8 @@ matches the ID.
 | `mas/roster/registry_index.yaml` | Design-time source of truth for agents, capabilities, and the skills registry | Durable |
 
 The episodic DB also holds registry index tables (`mas_agents`, `mas_skills`, etc.)
-that index architecture artifacts. Runtime lookups query the DB registry first, then
-fall back to the filesystem. After editing `agents/*.md` or
-`mas/roster/registry_canonical.yaml`, run `roster_sync.py` to refresh the DB index
-(see [authoring-agents.md](authoring-agents.md)).
+that index architecture artifacts. Runtime lookups query the DB registry first,
+then fall back to the filesystem. Capability matching overlays the semantic YAML
+vocabulary so stale operational rows cannot silently create false gaps; `mas
+doctor` reports projection drift. After editing `agents/*.md` or roster YAML, run
+the roster/capability sync tools (see [authoring-agents.md](authoring-agents.md)).

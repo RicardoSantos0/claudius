@@ -3,7 +3,7 @@
 # [project.scripts]) and the import package is `core`.
 name = "claudius"
 version = "0.2.0"
-description = "claudius — a governed multi-agent delivery framework for Claude Code (CLI, reusable agents, MAS workflow skills, policies, templates)."
+description = "claudius — a provider-neutral governed multi-agent delivery framework with CLI, MCP, Codex, Claude Code, OpenCode, workflow skills, policies, and templates."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
@@ -45,7 +45,17 @@ vector = [
     "pydantic-settings>=2.14.2",
 ]
 server = [
-    "mcp>=1.0",
+    "mcp>=1.28.1",
+]
+openai = [
+    "openai>=1.0",
+]
+litellm = [
+    "litellm>=1.0",
+]
+providers = [
+    "openai>=1.0",
+    "litellm>=1.0",
 ]
 
 [project.scripts]

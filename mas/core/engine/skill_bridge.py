@@ -35,28 +35,111 @@ ROOT = mas_root()  # mas/
 REPO_ROOT = ROOT.parent                    # repo root (holds skills/)
 SKILLS_DIR = REPO_ROOT / "skills"
 
+# Attribution decided in proj-YYYYMMDD-NNN-skill-attribution (lite MAS).
+# See mas/projects/proj-YYYYMMDD-NNN-skill-attribution/planning/product_plan.yaml
+# for per-agent rationale.
 SKILL_ACCESS: dict[str, list[str]] = {
     "master_orchestrator": ["*"],
-    "scribe_agent": ["research-extract", "research-sync", "mas-document", "mas-handoff"],
-    "inquirer_agent": ["research-extract", "mas-clarify"],
-    "product_manager_agent": ["research-extract", "research-sync", "mas-clarify"],
+    "scribe_agent": [
+        "research-extract", "research-sync", "mas-document", "mas-handoff",
+        "writing-guidelines", "find-skills",
+    ],
+    "inquirer_agent": [
+        "research-extract", "mas-clarify", "notebooklm",
+        "adaptive-communication", "find-skills",
+    ],
+    "product_manager_agent": [
+        "research-extract", "research-sync", "mas-clarify",
+        "adaptive-communication", "writing-guidelines", "human-architect-mindset",
+        "find-skills",
+    ],
     # graphify = recon: navigate/query the target folder before decomposing execution.
-    "project_manager_agent": ["research-extract", "mas-plan", "mas-examine", "graphify"],
-    "hr_agent": [],
-    "evaluator_agent": ["research-extract", "mas-postmortem"],
+    "project_manager_agent": [
+        "research-extract", "mas-plan", "mas-examine", "graphify",
+        "human-architect-mindset", "negentropy-lens", "find-skills",
+    ],
+    "hr_agent": ["find-skills"],
+    "evaluator_agent": [
+        "research-extract", "mas-postmortem",
+        "vanity-engineering-review", "negentropy-lens",
+        "find-skills",
+    ],
     # skill-builder = on-demand skill creation/optimization, the natural home for
     # "we keep re-doing X -> make it a skill" improvement proposals.
-    "trainer_agent": ["mas-postmortem", "skill-builder"],
-    "spawner_agent": ["skill-builder"],
-    "risk_advisor": ["mas-examine"],
-    "quality_advisor": ["mas-examine"],
-    "devils_advocate": [],
+    "trainer_agent": [
+        "mas-postmortem", "skill-builder",
+        "find-skills", "renaissance-architecture", "vanity-engineering-review",
+    ],
+    "spawner_agent": [
+        "skill-builder",
+        "find-skills", "mas-examine",
+    ],
+    "risk_advisor": [
+        "mas-examine",
+        "negentropy-lens", "find-skills",
+    ],
+    "quality_advisor": [
+        "mas-examine",
+        "writing-guidelines", "vanity-engineering-review",
+        "design-audit", "ui-typography", "web-design-guidelines",
+        "impeccable", "find-skills",
+    ],
+    "devils_advocate": [
+        "vanity-engineering-review", "negentropy-lens", "find-skills",
+    ],
     # graphify = grounded codebase/architecture comprehension for domain reasoning.
     # NotebookLM grounding for this agent stays brokered via master_orchestrator (see
     # domain_expert.md "Knowledge Retrieval"), so no direct notebooklm grant here.
-    "domain_expert": ["research-extract", "mas-examine", "graphify"],
-    "efficiency_advisor": [],
-    "session_scheduler": ["mas-review", "mas-handoff", "mas-logwork"],
+    "domain_expert": [
+        "research-extract", "mas-examine", "graphify",
+        "human-architect-mindset", "renaissance-architecture", "adaptive-communication",
+        "agentic-ux-design-relationship-centric-interfaces", "find-skills",
+    ],
+    "efficiency_advisor": [
+        "vanity-engineering-review", "negentropy-lens", "find-skills",
+    ],
+    "session_scheduler": ["mas-review", "mas-handoff", "mas-logwork", "find-skills"],
+
+    # ---- Delivery engineers (previously omitted -> silently denied all) ----
+    "canonical_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "find-skills",
+    ],
+    "analysis_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "find-skills",
+    ],
+    "integration_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "find-skills",
+    ],
+    "reliability_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "find-skills",
+    ],
+    "ml_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "find-skills",
+    ],
+    "nlp_taxonomy_specialist": [
+        "mas-examine", "graphify", "mas-logwork", "find-skills",
+    ],
+    "librarian_agent": [
+        "mas-examine", "find-skills",
+    ],
+
+    # ---- Specialist agents added 2026-07-01 ----
+    "appsec_specialist_agent": [
+        "mas-examine", "graphify", "vanity-engineering-review", "find-skills",
+    ],
+    "backend_platform_engineer": [
+        "mas-examine", "graphify", "mas-logwork", "vanity-engineering-review",
+        "webapp-delivery", "frontend-design", "impeccable",
+        "deploy-to-vercel", "vercel-cli-with-tokens", "vercel-optimize",
+        "vercel-composition-patterns", "vercel-react-best-practices",
+        "vercel-react-view-transitions",
+        "find-skills",
+    ],
 }
 
 

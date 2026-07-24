@@ -583,6 +583,11 @@ class CapabilityRegistry:
             return []
         try:
             from core.db import _get_connection, DB_PATH
+            yaml_agents = {
+                a.get("agent_id"): a
+                for a in self.load_registry().get("registry", {}).get("agents", [])
+                if a.get("agent_id")
+            }
             with _get_connection(DB_PATH) as conn:
                 rows = conn.execute(
                     "SELECT agent_id, name, tier, description, tools, status, last_score"
@@ -594,12 +599,22 @@ class CapabilityRegistry:
                         tools = json.loads(row["tools"] or "[]")
                     except Exception:
                         tools = []
+                    yaml_entry = yaml_agents.get(row["agent_id"], {})
+                    semantic_capabilities = yaml_entry.get("capabilities", tools)
                     entry = {
                         "agent_id": row["agent_id"],
                         "name": row["name"],
                         "trust_tier": row["tier"] or "",
                         "description": row["description"] or "",
-                        "capabilities": tools,
+                        # Semantic capabilities come from the governed YAML contract.
+                        # The DB tools projection remains operational metadata and may
+                        # lag until an explicit sync; never turn that drift into a
+                        # false capability gap.
+                        "capabilities": semantic_capabilities,
+                        "db_capabilities": tools,
+                        "capability_projection_drift": (
+                            sorted(tools) != sorted(semantic_capabilities)
+                        ),
                         "status": row["status"],
                     }
                     if row["last_score"] is not None:
@@ -609,6 +624,18 @@ class CapabilityRegistry:
                 return agents
         except Exception:
             return []
+
+    def capability_projection_drift(self) -> list[dict]:
+        """Return DB/YAML semantic-capability mismatches without mutating either."""
+        return [
+            {
+                "agent_id": agent["agent_id"],
+                "db_capabilities": agent.get("db_capabilities", []),
+                "yaml_capabilities": agent.get("capabilities", []),
+            }
+            for agent in self._db_agents()
+            if agent.get("capability_projection_drift")
+        ]
 
     def list_agents(self) -> list[dict]:
         """

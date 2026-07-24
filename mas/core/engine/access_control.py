@@ -107,6 +107,7 @@ ACCESS_CONTROL: dict[str, dict] = {
     # === EVALUATION ===
     "evaluation.performance_metrics":   {"write": ["evaluator_agent"], "mode": "append_only"},
     "evaluation.quality_findings":      {"write": ["evaluator_agent"], "mode": "append_only"},
+    "evaluation.test_drift_context":    {"write": ["evaluator_agent"], "mode": "overwrite"},
     "evaluation.improvement_proposals": {"write": ["trainer_agent"],   "mode": "append_only"},
     "evaluation.approved_updates":      {"write": ["master_orchestrator"], "mode": "append_only"},
 

@@ -282,6 +282,59 @@ shared_state:
       set_by: "evaluator_agent"
       mutability: "append_only"
 
+  # --- EXECUTION CONTROL ---
+  # Materialized from the approved execution plan and reconciled with TaskBoard.
+  execution:
+    execution_plan_path:
+      type: "string"
+      set_by: "project_manager_agent"
+      mutability: "master_or_project_manager"
+    tasks:
+      type: "list[execution_task]"
+      set_by: "project_manager_agent"
+      mutability: "controlled_status_updates"
+      execution_task_schema:
+        task_id: "string — unique within the project"
+        description: "string"
+        assigned_to: "string | null — registered agent_id"
+        milestone: "string | null — referenced milestone_id"
+        dependencies: "list[string] — referenced task_ids"
+        acceptance_refs: "list[string] — referenced acceptance criterion IDs"
+        status: "enum[planned, assigned, in_progress, blocked, completed, failed]"
+        notes: "string | null"
+        blocker_description: "string | null"
+        started_at: "datetime_iso8601 | null"
+        completed_at: "datetime_iso8601 | null"
+        progress_percent: "float | null — 0 through 100"
+    milestones:
+      type: "list[execution_milestone]"
+      set_by: "project_manager_agent"
+      mutability: "controlled_status_updates"
+      execution_milestone_schema:
+        milestone_id: "string — unique within the project"
+        requires: "list[string] — referenced task_ids"
+        task_ids: "list[string] — materialized referenced task_ids"
+        status: "enum[pending, in_progress, completed, blocked]"
+        started_at: "datetime_iso8601 | null"
+        completed_at: "datetime_iso8601 | null"
+        progress_percent: "float | null — derived from referenced task completion"
+    resource_requests:
+      type: "list[resource_request]"
+      set_by: "project_manager_agent"
+      mutability: "append_only_with_resolution"
+    progress_reports:
+      type: "list[progress_report]"
+      set_by: "project_manager_agent"
+      mutability: "append_only"
+    blocker_alerts:
+      type: "list[blocker_alert]"
+      set_by: "project_manager_agent"
+      mutability: "append_only_with_resolution"
+    delivery_risks:
+      type: "list[delivery_risk]"
+      set_by: "project_manager_agent"
+      mutability: "append_only_with_resolution"
+
   # --- ARTIFACTS AND OUTPUTS ---
   artifacts:
     documents:
@@ -324,6 +377,15 @@ shared_state:
       type: "list[finding]"
       set_by: "evaluator_agent"
       mutability: "append_only"
+    test_drift_context:
+      type: "dict"
+      set_by: "evaluator_agent"
+      mutability: "overwrite"
+      schema:
+        changed_files: "list[string]"
+        coverage_mappings: "dict[string, list[string]] — explicit implementation-to-behavior-test path mappings"
+        source: "enum[evaluation_handoff, git_log, artifact_registry, unavailable]"
+        captured_at: "datetime_iso8601 | null"
     improvement_proposals:
       type: "list[improvement_proposal]"
       set_by: "trainer_agent"

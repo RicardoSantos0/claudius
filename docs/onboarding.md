@@ -63,7 +63,7 @@ The suite enforces ~70% coverage on individual runs; the full suite typically cl
 
 - **Edited an agent file?** Run `python mas/tools/roster_sync.py` (or rely on `mas registry seed` at project close) so the `mas_agents` DB index stays consistent with the filesystem.
 - **Forgot the local hooks?** Run `uv run python scripts/validate_agents.py` manually before pushing, and verify your commit message with `uv run python scripts/check_mas_discipline.py --message-file <commit-message-file>`. Registry drift produces silent agent-not-found errors at runtime; missing MAS evidence makes governance bypasses hard to audit.
-- **Working across Claude Code, Codex, OpenCode, Copilot, or local models?** Drive the work through `mas prompt` / `mas ingest` or the MCP `mas_prompt` / `mas_ingest` tools, then close the MAS project before committing.
+- **Working across Claude Code, Codex, OpenCode, Copilot, or local models?** Drive the work through `mas prompt` / `mas ingest` or the MCP `mas_prompt_envelope` / `mas_ingest` tools. Use legacy `mas_prompt` only for a prompt-only client that cannot apply or return a route, then close the MAS project before committing.
 - **File writes:** agents must use the `Write` tool with **absolute paths** (in your platform's native form); bash heredocs can write to the wrong location.
 
 ## 6. Where Next

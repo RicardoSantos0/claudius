@@ -33,9 +33,10 @@ from typing import Any
 
 import yaml
 
+from core.paths import repo_root
+
 logger = logging.getLogger(__name__)
 
-from core.paths import repo_root
 ROOT = repo_root()  # repo root (holds agents/, skills/)
 
 # ---------------------------------------------------------------------------
@@ -49,6 +50,10 @@ class LoopConfig:
     auto: bool = False                # skip human checkpoints
     target_phase: str | None = None   # stop after this phase completes
     max_agent_retries: int = 2        # per-agent consecutive error limit
+    execution_profile: str | None = None  # explicit semantic route override
+    model_override: str | None = None     # explicit provider model override
+    provider_override: str | None = None  # explicit provider override
+    provider_catalog: str | None = None   # explicit configured provider catalog
 
 
 class StopReason(str, Enum):
@@ -165,7 +170,7 @@ class OrchestrationLoop:
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
                         self._pending_grounded_context = answer
-                        print(f"  [notebooklm] grounded context injected for next step")
+                        print("  [notebooklm] grounded context injected for next step")
 
                     if parsed.skill_request:
                         self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
@@ -197,7 +202,7 @@ class OrchestrationLoop:
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
                         self._pending_grounded_context = answer
-                        print(f"  [notebooklm] grounded context injected for next step")
+                        print("  [notebooklm] grounded context injected for next step")
 
                     if parsed.skill_request:
                         self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
@@ -276,8 +281,8 @@ class OrchestrationLoop:
 
     def _dispatch_agent(self, agent_id: str, state: dict) -> "_AgentResponse":
         from core.engine.agent_runner import AgentRunner
+        from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import PromptAssembler
-        from core.utils.config import get_model_for_agent
 
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
 
@@ -298,19 +303,104 @@ class OrchestrationLoop:
 
         prompt = self._assembler.assemble(canonical_agent_id, state,
                                           extra_context=extra_ctx)
+        prompt_metadata = getattr(self._assembler, "last_prompt_metadata", {})
 
-        model = get_model_for_agent(canonical_agent_id)
-        runner = AgentRunner(model=model)
+        route_override = self._pending_route_override(canonical_agent_id, state)
+        router = ExecutionProfileRouter()
+        selection = router.resolve(
+            canonical_agent_id,
+            phase,
+            explicit_profile=(self.config.execution_profile
+                              or route_override.get("profile")),
+            explicit_model=(self.config.model_override
+                            or route_override.get("model")),
+            explicit_provider=(self.config.provider_override
+                               or route_override.get("provider")),
+            risk_level=self._project_risk_level(state),
+            retry_count=self._agent_error_counts.get(canonical_agent_id, 0),
+            provider_catalog=(self.config.provider_catalog
+                              or route_override.get("catalog")),
+        )
+        route_action_id = router.record_route_selection(
+            self.config.project_id,
+            selection,
+            prompt_metadata=prompt_metadata,
+        )
+        route_selection = selection.to_dict()
+        route_selection["route_action_id"] = route_action_id
+        stable_prefix = (prompt_metadata.get("stable_prefix", {}) or {}).get(
+            "sha256"
+        )
+        if stable_prefix:
+            route_selection["stable_prefix_sha256"] = stable_prefix
 
         from core.utils.config import load_config
         max_tokens = load_config().get("llm", {}).get("max_tokens", 4096)
 
-        result = runner.run(
-            agent_id=canonical_agent_id,
-            prompt=prompt,
-            project_id=self.config.project_id,
-            max_tokens=max_tokens,
-        )
+        candidates = list(selection.candidates or [])
+        if not candidates:
+            candidates = [{
+                "provider": selection.provider,
+                "model": selection.model,
+                "reasoning_effort": selection.reasoning_effort,
+                "fallback_on": [],
+            }]
+        start_index = max(0, int(selection.selected_candidate_index))
+        result: dict = {}
+        for candidate_index in range(start_index, len(candidates)):
+            candidate = candidates[candidate_index]
+            active_route = {
+                **route_selection,
+                "provider": candidate["provider"],
+                "model": candidate["model"],
+                "reasoning_effort": candidate.get("reasoning_effort"),
+                "active_candidate_index": candidate_index,
+                "execution_status": (
+                    "primary_attempt"
+                    if candidate_index == 0
+                    else "fallback_attempt"
+                ),
+            }
+            runner = AgentRunner(
+                model=str(candidate["model"]),
+                provider=str(candidate["provider"]),
+                route_selection=active_route,
+                reasoning_effort=candidate.get("reasoning_effort"),
+            )
+            result = runner.run(
+                agent_id=canonical_agent_id,
+                prompt=prompt,
+                project_id=self.config.project_id,
+                max_tokens=max_tokens,
+            )
+            has_next = candidate_index + 1 < len(candidates)
+            if not has_next or not router.should_fallback(candidate, result):
+                break
+            from core.engine.event_recorder import EventRecorder
+
+            next_candidate = candidates[candidate_index + 1]
+            EventRecorder().record_simple(
+                project_id=self.config.project_id,
+                actor=canonical_agent_id,
+                action_type="dispatch_fallback",
+                intent=(
+                    f"Approved model fallback after "
+                    f"{result.get('error_type', 'unclassified')} failure"
+                ),
+                phase=phase,
+                payload={
+                    "dispatch_id": selection.dispatch_id,
+                    "from": {
+                        "provider": candidate["provider"],
+                        "model": candidate["model"],
+                    },
+                    "to": {
+                        "provider": next_candidate["provider"],
+                        "model": next_candidate["model"],
+                    },
+                    "error_type": result.get("error_type"),
+                },
+            )
 
         text = result.get("text", "")
         tokens = result.get("tokens_used", 0)
@@ -331,6 +421,52 @@ class OrchestrationLoop:
             self._agent_error_counts.pop(canonical_agent_id, None)
 
         return _AgentResponse(agent_id=canonical_agent_id, raw_text=text, tokens_used=tokens)
+
+    @staticmethod
+    def _project_risk_level(state: dict) -> str | None:
+        value = state.get("project_definition", {}).get("risk_classification")
+        return str(value) if value not in (None, "") else None
+
+    def _pending_route_override(self, agent_id: str, state: dict) -> dict[str, str]:
+        """Read an optional explicit routing request from the pending handoff."""
+        history = state.get("workflow", {}).get("handoff_history", [])
+        for handoff in reversed(history):
+            try:
+                from core.engine.handoff_engine import HandoffEngine
+                expanded = HandoffEngine.expand(handoff)
+            except Exception:
+                expanded = handoff
+            target = normalize_agent_id(expanded.get("to_agent")) or expanded.get("to_agent")
+            acceptance = expanded.get("acceptance", {})
+            acceptance_status = (
+                acceptance.get("status")
+                if isinstance(acceptance, dict)
+                else expanded.get("acc")
+            )
+            if target != agent_id or acceptance_status not in {"pending", "accepted"}:
+                continue
+            payload = expanded.get("payload", {}) or {}
+            routing = payload.get("routing", {}) if isinstance(payload, dict) else {}
+            hr_params = (
+                payload.get("hr_suggested_params", {})
+                if isinstance(payload, dict)
+                else {}
+            )
+            result = {
+                "profile": str(
+                    routing.get("execution_profile")
+                    or routing.get("profile")
+                    or hr_params.get("model_profile")
+                    or ""
+                ),
+                "model": str(routing.get("model_override") or routing.get("model") or ""),
+                "provider": str(routing.get("provider_override") or routing.get("provider") or ""),
+            }
+            catalog = routing.get("provider_catalog") or routing.get("catalog")
+            if catalog:
+                result["catalog"] = str(catalog)
+            return result
+        return {}
 
     def _handle_skill_request(
         self,
@@ -568,13 +704,16 @@ class OrchestrationLoop:
 
         # 1. Record decisions
         for dec in parsed.decisions:
-            if isinstance(dec, dict) and dec.get("id"):
+            decision_id = dec.get("decision_id") or dec.get("id")
+            if isinstance(dec, dict) and decision_id:
                 sm.append("master_orchestrator", "decisions", "decision_log", {
-                    "decision_id":             dec.get("id"),
-                    "value":                   dec.get("v", ""),
-                    "rationale":               dec.get("rat", ""),
-                    "alternatives_considered": dec.get("alt", []),
-                    "related_to":              dec.get("rel", ""),
+                    "decision_id":             decision_id,
+                    "value":                   dec.get("value", dec.get("v", "")),
+                    "rationale":               dec.get("rationale", dec.get("rat", "")),
+                    "alternatives_considered": dec.get(
+                        "alternatives_considered", dec.get("alt", [])
+                    ),
+                    "related_to":              dec.get("related_to", dec.get("rel", "")),
                     "recorded_at":             now,
                     "source":                  "orchestration_loop",
                 })
@@ -699,15 +838,18 @@ class OrchestrationLoop:
         self._record_skills_used(agent_id, parsed.skills_used, phase)
 
         for dec in parsed.decisions:
-            if isinstance(dec, dict) and dec.get("id"):
+            decision_id = dec.get("decision_id") or dec.get("id")
+            if isinstance(dec, dict) and decision_id:
                 try:
                     sm.append("scribe_agent", "decisions", "decision_log", {
-                        "decision_id":             dec.get("id"),
+                        "decision_id":             decision_id,
                         "decided_by":              agent_id,
-                        "value":                   dec.get("v", ""),
-                        "rationale":               dec.get("rat", ""),
-                        "alternatives_considered": dec.get("alt", []),
-                        "related_to":              dec.get("rel", ""),
+                        "value":                   dec.get("value", dec.get("v", "")),
+                        "rationale":               dec.get("rationale", dec.get("rat", "")),
+                        "alternatives_considered": dec.get(
+                            "alternatives_considered", dec.get("alt", [])
+                        ),
+                        "related_to":              dec.get("related_to", dec.get("rel", "")),
                         "recorded_at":             now,
                         "source":                  "orchestration_loop",
                     })
@@ -753,9 +895,9 @@ class OrchestrationLoop:
         """Run full consultation round. Returns ConsultationSynthesis or None."""
         from core.engine.consultation_engine import ConsultationEngine
         from core.engine.agent_runner import AgentRunner
+        from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import PromptAssembler
         from core.engine.shared_state_manager import SharedStateManager
-        from core.utils.config import get_model_for_agent
 
         sm = SharedStateManager(self.config.project_id)
         engine = ConsultationEngine()
@@ -811,8 +953,29 @@ class OrchestrationLoop:
             if consultant_id == "domain_expert":
                 extra["injected_domain_context"] = request.domain_context
             prompt = assembler.assemble(consultant_id, state, extra_context=extra)
-            model = get_model_for_agent(consultant_id)
-            runner = AgentRunner(model=model)
+            router = ExecutionProfileRouter()
+            selection = router.resolve(
+                consultant_id,
+                state.get("core_identity", {}).get("current_phase", ""),
+                explicit_profile=trigger.get("execution_profile"),
+                explicit_model=trigger.get("model_override"),
+                explicit_provider=trigger.get("provider_override"),
+                risk_level=(trigger.get("risk_level") or self._project_risk_level(state)),
+                retry_count=self._agent_error_counts.get(consultant_id, 0),
+                provider_catalog=(
+                    trigger.get("provider_catalog") or self.config.provider_catalog
+                ),
+            )
+            route_action_id = router.record_route_selection(
+                self.config.project_id, selection
+            )
+            route_selection = selection.to_dict()
+            route_selection["route_action_id"] = route_action_id
+            runner = AgentRunner(
+                model=selection.model,
+                provider=selection.provider,
+                route_selection=route_selection,
+            )
             result = runner.run(consultant_id, prompt,
                                 project_id=self.config.project_id)
 

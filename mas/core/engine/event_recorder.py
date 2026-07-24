@@ -64,6 +64,7 @@ class EventRecorder:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self._repo_root = _find_repo_root()
         self._valid_types: set[str] = self._load_valid_types()
+        self._uses_default_db = db_path is None
         self._db_path: Path = (
             Path(db_path) if db_path is not None else self._get_db_path()
         )
@@ -113,6 +114,7 @@ class EventRecorder:
         # Degrade gracefully if DB write fails — phases must not fail due to event recording.
         try:
             from core.db import append_event
+            db_kwargs = {} if self._uses_default_db else {"db_path": self._db_path}
             action_id = append_event(
                 project_id=event.project_id,
                 agent_id=event.actor,
@@ -120,7 +122,7 @@ class EventRecorder:
                 intent=event.intent,
                 result_shape=event.result_shape or "",
                 payload=normalised_payload,
-                db_path=self._db_path,
+                **db_kwargs,
             )
             return action_id
         except Exception as exc:  # noqa: BLE001

@@ -400,7 +400,7 @@ class TrainingEngine:
     def load_backlog(self) -> dict:
         if not BACKLOG_FILE.exists():
             return {"proposals": [], "last_updated": None}
-        with open(BACKLOG_FILE) as f:
+        with open(BACKLOG_FILE, encoding="utf-8") as f:
             return yaml.safe_load(f) or {"proposals": [], "last_updated": None}
 
     def update_backlog(self, proposals: list[TrainingProposal]) -> None:
@@ -763,7 +763,7 @@ def _count_by(proposals: list[TrainingProposal], attr: str) -> dict:
 
 def _save_backlog(backlog: dict) -> None:
     BACKLOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    with open(BACKLOG_FILE, "w") as f:
+    with open(BACKLOG_FILE, "w", encoding="utf-8") as f:
         yaml.dump(backlog, f, default_flow_style=False, sort_keys=False)
 
 
