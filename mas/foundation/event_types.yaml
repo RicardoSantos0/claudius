@@ -45,6 +45,7 @@ event_types:
     - output_lint
     - evaluation_result
     - postmortem_created
+    - prompt_estimated
 
   governance:
     - decision_recorded

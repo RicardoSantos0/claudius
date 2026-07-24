@@ -102,7 +102,7 @@ def resolve_vector_backend(config: dict | None = None) -> VectorBackendConfig:
             os.getenv("MAS_CHROMA_PATH"),
             vector.get("persist_directory"),
             chroma_cfg.get("persist_directory"),
-            "data/chromadb",
+            "mas/data/chromadb",
         )
     )
     chroma_collection = str(
@@ -116,7 +116,7 @@ def resolve_vector_backend(config: dict | None = None) -> VectorBackendConfig:
     return VectorBackendConfig(
         provider=provider,
         enabled=enabled,
-        sqlite_url=str(sqlite_cfg.get("url", "sqlite:///data/vector_memory.db")),
+        sqlite_url=str(sqlite_cfg.get("url", "sqlite:///mas/data/vector_memory.db")),
         chroma_persist_directory=chroma_dir,
         chroma_collection=chroma_collection,
     )

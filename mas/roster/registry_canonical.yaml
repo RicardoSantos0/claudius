@@ -4,7 +4,8 @@ agents:
     claude_name: master-orchestrator
     trust_tier: T0
     status: active
-    model: opus
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -30,7 +31,8 @@ agents:
     claude_name: scribe-agent
     trust_tier: T0
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Write
@@ -55,7 +57,8 @@ agents:
     claude_name: hr-agent
     trust_tier: T0
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -79,7 +82,8 @@ agents:
     claude_name: inquirer-agent
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -103,7 +107,8 @@ agents:
     claude_name: product-manager-agent
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -127,7 +132,8 @@ agents:
     claude_name: project-manager-agent
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -151,7 +157,8 @@ agents:
     claude_name: evaluator-agent
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -175,7 +182,8 @@ agents:
     claude_name: trainer-agent
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -199,7 +207,8 @@ agents:
     claude_name: spawner-agent
     trust_tier: T2
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Grep
@@ -223,7 +232,8 @@ agents:
     claude_name: risk-advisor
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     domains:
@@ -243,7 +253,8 @@ agents:
     claude_name: quality-advisor
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     domains:
@@ -263,7 +274,8 @@ agents:
     claude_name: devils-advocate
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     domains:
@@ -283,7 +295,8 @@ agents:
     claude_name: domain-expert
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     domains:
@@ -303,7 +316,8 @@ agents:
     claude_name: efficiency-advisor
     trust_tier: T1
     status: active
-    model: haiku
+    model: ""
+    model_profile: auto
     tools:
     - Read
     domains:
@@ -323,7 +337,8 @@ agents:
     claude_name: session-scheduler
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Bash
@@ -344,7 +359,8 @@ agents:
     claude_name: reliability-engineer
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools:
     - Read
     - Write

@@ -1,12 +1,12 @@
 # claudius
 
-A **governed multi-agent delivery framework for Claude Code**: reusable agents, MAS
-workflow skills, policy files, templates, and a Python CLI for project lifecycle,
-handoffs, shared state, and evaluation. It coordinates 16 specialized AI agents across
-core, established, supervised, and infrastructure roles through formal protocols for
-end-to-end project delivery.
+A provider-neutral **governed multi-agent delivery framework**: reusable agents, MAS
+workflow skills, policy files, templates, and a Python CLI/MCP server for project
+lifecycle, handoffs, shared state, evaluation, and phase-aware model routing. It
+coordinates 16 specialized AI agents across Claude Code, Codex, OpenCode, autonomous
+API providers, and paste-based manual loops.
 
-For advanced Claude Code users who want a structured, auditable multi-agent workflow —
+For advanced agent-tool users who want a structured, auditable multi-agent workflow —
 not a polished SaaS product. See [What's included / not included](#whats-included--not-included)
 and [MVP limitations](#mvp-limitations).
 
@@ -57,8 +57,8 @@ and [MVP limitations](#mvp-limitations).
   skill, plus project-specific agents — kept out of the MVP core.
 - Only a **fresh-install smoke test** ships (`mas/tests/test_smoke.py`); the full
   internal test suite stays in the development repo.
-- No credentials. Bring your own `ANTHROPIC_API_KEY` (see `.env.example`); the CLI
-  itself makes no API calls unless you run `mas run`.
+- No credentials. Bring the key for the provider you select (see `.env.example`);
+  prompt/ingest workflows make no API calls, and live canaries are opt-in.
 
 ## MVP limitations
 
@@ -70,8 +70,11 @@ This is a first public MVP (`v0.1.0`). Known limitations, deferred to later rele
   basic (checkpoints + resume).
 - **Partial protocol support.** No full A2A; MCP/agent-to-agent interop is roadmap.
 - **No PyPI release or plugin architecture yet.** Install from source.
-- Autonomous `mas run` requires Anthropic credentials and is less battle-tested than
-  the manual (Claude Code) workflow.
+- **Vector search remains optional and disabled by default.** The `vector` extra
+  currently pins ChromaDB below 1.x because GHSA-f4j7-r4q5-qw2c has no fixed
+  ChromaDB 1.x release yet.
+- Autonomous `mas run` requires credentials for its selected catalog and is less
+  battle-tested than the manual workflow.
 
 ---
 
@@ -81,7 +84,8 @@ This is a first public MVP (`v0.1.0`). Known limitations, deferred to later rele
 
 - Python 3.11+
 - [uv](https://docs.astral.sh/uv/) package manager
-- Claude Code (VS Code extension)
+- Claude Code or Codex for integrated agent workflows; OpenCode and other LLM
+  surfaces work through MCP or the prompt/ingest loop
 
 ### Setup (per machine)
 
@@ -121,6 +125,18 @@ files as package data and `mas init-workspace` copies them into the workspace, s
 the CLI works without a clone. Running from a clone (source-tree mode, below) still
 works unchanged.
 
+Install the adapter extras needed for autonomous non-Anthropic catalogs:
+
+```bash
+pip install "claudius[openai]"    # OpenAI/Codex-compatible API routes
+pip install "claudius[litellm]"   # Gemini and other LiteLLM routes
+pip install "claudius[providers]" # both optional provider adapters
+```
+
+Source checkouts can use `uv sync --extra openai`, `--extra litellm`, or
+`--extra providers`. Manual prompt/ingest and MCP envelope routing do not require
+these SDK extras unless the MAS process itself makes the provider call.
+
 ### Run a MAS project
 
 Activate the venv once per session (recommended — faster than `uv run`):
@@ -147,6 +163,16 @@ pytest mas/tests/                   # Run test suite
 ```
 
 `uv run mas ...` also works from repo root but is slower.
+
+### Commit Discipline
+
+Install the local hooks with `pre-commit install --hook-type pre-commit --hook-type commit-msg`.
+Commit messages for tracked work must include `MAS: proj-YYYYMMDD-NNN-slug`.
+The commit-msg hook verifies that the referenced local MAS project has governed
+handoff trace, token accounting, and closed-project final artifacts. Use
+`MAS-BYPASS: <rationale>` only when the user explicitly authorizes an emergency
+out-of-band commit; CI still checks that direct pushes carry a MAS marker or an
+explicit bypass record.
 
 ---
 
@@ -231,7 +257,11 @@ claude-config/
 
 A governed multi-agent delivery framework that coordinates 16 specialized AI agents through formal handoff protocols, access-controlled shared state, and policy enforcement.
 
-**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1` (optional extras: `psycopg` for Postgres, `chromadb` for vector search)
+**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `openai`, `litellm`, `psycopg` for Postgres, and `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
+
+The vector extra deliberately avoids ChromaDB 1.x until the upstream advisory
+GHSA-f4j7-r4q5-qw2c has a fixed 1.x release. Keep vector storage disabled unless
+you explicitly need it, and regenerate `uv.lock` after any dependency-policy change.
 
 ### Agent Network
 
@@ -317,10 +347,12 @@ intake → execution → closed
 Lite mode skips specification, planning, capability discovery, consultation, and review.
 `mas status` shows `[lite]` next to the phase. Spawn is blocked in lite projects.
 
-Each standard phase transition requires:
-1. Exit criteria verification by Master
-2. Shared state snapshot
-3. Phase recording in state
+Each standard phase transition is guarded by the shared lifecycle harness:
+
+1. The current phase's required artifact contract must pass.
+2. Entry to standard-mode execution also requires a populated canonical task board.
+3. A valid transition snapshots the departing phase, updates shared state, and emits
+   one typed `phase_transition` event.
 
 **Project IDs** follow the format: `proj-{YYYYMMDD}-{NNN}-{slug}` (e.g., `proj-YYYYMMDD-NNN-session-scheduler`). Each project gets a standardized folder structure created by Scribe.
 
@@ -356,7 +388,10 @@ Each standard phase transition requires:
 | `handoff_engine.py` | Handoff creation, acceptance, SQL event logging |
 | `access_control.py` | Field-level write permissions (updated 0.2.0 — broader write rights) |
 | `prompt_assembler.py` | State projection + FTS5-aware prompt injection |
-| `agent_runner.py` | Anthropic SDK wrapper; gated on `ANTHROPIC_API_KEY`; logs tokens |
+| `agent_runner.py` | Provider-adapter runner for Anthropic, OpenAI-compatible, LiteLLM, or custom transports; logs tokens and route telemetry |
+| `execution_profile_router.py` | Phase/risk/agent-aware semantic profile and provider-catalog selection |
+| `model_canary.py` | Preview-first, bounded provider/model identity canaries |
+| `route_telemetry.py` | Privacy-safe SQLite route telemetry and aggregates |
 | `consultation_engine.py` | Consultation lifecycle, synthesis, compact format |
 | `intake_checker.py` | Spec quality scoring (threshold ≥ 0.85) |
 | `capability_registry.py` | Roster, gap certificates, match scoring |
@@ -450,19 +485,59 @@ The runtime uses a SQL event store:
 - Every live `agent_runner` call writes a row
 - SQLite uses FTS5 locally; PostgreSQL uses a simple SQL text match until a richer search backend is configured
 - `core.db.semantic_search(query, project_id)` — SQL-backed event search
-- `core.db.query_token_usage(project_id)` — sums `tokens_prompt/completion/total`
-- `prompt_assembler` injects the 5 most relevant past events into every agent prompt
-  (uses semantic search with current phase as query; falls back to recent-5 if < 2 hits)
+- `core.db.query_token_usage(project_id)` — separates observed calls from non-billable
+  prompt previews and exposes provider-reported cache counters when available
+- `mas route-metrics` — groups provider-attested cache hits and billed-token
+  reductions by opaque stable-prefix hash; client/operator claims remain
+  provenance and are not counted as verified cache economics
+- `prompt_assembler` injects at most 3 deduplicated, project-relevant past events
+  using the phase, target area, and project goal; generic transition noise is excluded
+- `mas sync --dry-run` reports file-to-event projection debt; deterministic event keys
+  make repeated reconciliation a no-op
+- `mas doctor <project-id>` checks SQLite integrity, reconciliation debt, layout drift,
+  state/decision consistency, and registry capability-projection drift
 
-### LLM Configuration
+### LLM / Provider Configuration
 
-| Agent | Model | Max Tokens | Temperature |
-|-------|-------|------------|-------------|
-| `master_orchestrator` | `claude-opus-4-7` | 4096 | 0.3 |
-| `efficiency_advisor` | `claude-haiku-4-5` | 4096 | 0.3 |
-| All others | `claude-sonnet-4-6` | 4096 | 0.3 |
+MAS routes a semantic profile before choosing a vendor model. Planning, review,
+and evaluation default to `reasoning`; bounded execution defaults to `economy`.
+High-risk, critical-agent, and retry paths escalate before any economy assignment.
+Product and project manager roles retain `reasoning` in every phase. On Claude,
+the ordered reasoning route is Fable first and Opus 4.8 only for declared
+unavailability/exclusion or refusal.
 
-Model selection is canonical in `mas/system_config.yaml` (llm block) and per-agent in `mas/roster/registry_canonical.yaml`. Override at runtime via `MAS_MASTER_MODEL` / `MAS_DEFAULT_MODEL` env vars.
+`mas/system_config.yaml` ships interchangeable Anthropic, OpenAI, and
+Gemini/LiteLLM catalogs. Select one with `--catalog` or `MAS_MODEL_CATALOG`.
+All agent prompts use `model: inherit` and `model_profile: auto`, so the public
+roster is not pinned to Anthropic.
+
+In manual mode, `mas prompt` records a non-billable `prompt_estimated` preview
+and `mas ingest` records an observed response with heuristic token counting. Use
+`mas log-tokens` for exact provider counts, including cached-input, cache-write,
+and billable-input tokens. Prompt envelopes expose a stable-prefix fingerprint
+and component estimates so adapters can apply prompt caching without
+provider-specific governance in the core. Dispatch envelopes also carry an
+ordered candidate list and `dispatch_id`.
+
+| Surface | Route behavior |
+|---------|----------------|
+| Autonomous `mas run` | Engine-enforced provider/model route using the selected catalog |
+| Claude Code | Applies the Anthropic envelope model; planning is Fable-first with approved Opus fallback |
+| Codex | Emits model and reasoning-effort hints through the prompt envelope/MCP |
+| OpenCode | Emits the selected `-m provider/model` launch arguments |
+| Copilot / generic UI | Advisory unless the host selects and reports the actual model |
+
+Manual selection is not execution proof. Reasoning state changes require a
+matching receipt; client/operator receipts are attestations. Autonomous calls
+check provider-reported model identity against the approved candidates.
+
+Inspect catalogs with `mas model-catalogs`, preview one or all routes with
+`mas model-canary --catalog <name>` / `mas model-canary --all`, and inspect
+privacy-safe aggregates with `mas route-metrics`. Preview semantic identifier
+repairs with `mas consistency <project> --repair-preview`. Missing
+adapter-supplied cost or quality values remain
+unmeasured rather than being reported as zero. See
+[`docs/architecture/model-routing.md`](docs/architecture/model-routing.md).
 
 ### Domain Contexts
 
@@ -554,7 +629,12 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 ### Further documentation
 
 - [docs/architecture.md](docs/architecture.md) — component & lifecycle map
+- [docs/architecture/model-routing.md](docs/architecture/model-routing.md) — phase-aware provider catalogs, canaries, and telemetry
+- [docs/architecture/surface-compatibility-contract.md](docs/architecture/surface-compatibility-contract.md) — shared contract for Codex, Claude Code, OpenCode, and other clients
+- [docs/architecture/runtime-storage-contract.md](docs/architecture/runtime-storage-contract.md) — runtime DB, recovery, reconciliation, and cleanup boundaries
+- [docs/architecture/prompt-token-contract.md](docs/architecture/prompt-token-contract.md) — truthful token telemetry, cache boundaries, and accuracy-preserving startup context
 - [docs/operation-modes.md](docs/operation-modes.md) — Claude Code config mode vs source-tree MAS mode
+- [docs/governance/behavioral-discipline.md](docs/governance/behavioral-discipline.md) — MAS commit evidence for Claude Code, Codex, OpenCode, Copilot, and manual/package surfaces
 - [docs/authoring-agents.md](docs/authoring-agents.md) — add/update an agent without breaking registry invariants
 - [docs/authoring-skills.md](docs/authoring-skills.md) — add/register/validate a skill
 - [docs/release-checklist.md](docs/release-checklist.md) — pre-release validators, tests, smoke checks

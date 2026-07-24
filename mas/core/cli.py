@@ -17,7 +17,9 @@ Commands
 import re
 import os
 import sys
+import json
 import logging
+import importlib.util
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -67,15 +69,63 @@ def _resolve_project_dir(project_id: str) -> Path:
     return resolve_project_dir(project_id, projects_root=_get_projects_dir())
 
 
-def _execution_mode_label() -> str:
-    """Which execution path the engine will use by default.
+def _default_execution_route():
+    from core.engine.execution_profile_router import ExecutionProfileRouter
 
-    'manual (no API calls)' — the default Claude Code workflow; only `mas run` calls the
-    Anthropic API, and only when ANTHROPIC_API_KEY is set.
-    """
-    if os.getenv("ANTHROPIC_API_KEY"):
-        return "manual (no API calls) — `mas run` available (ANTHROPIC_API_KEY set)"
-    return "manual (no API calls) — default; `mas run` needs ANTHROPIC_API_KEY"
+    return ExecutionProfileRouter().resolve("master_orchestrator", "intake")
+
+
+def _provider_readiness(selection) -> dict:
+    """Describe credentials and optional adapter needed for one autonomous route."""
+    provider = selection.provider
+    model = selection.model
+    base_url = os.getenv("MAS_OPENAI_BASE_URL", "")
+    if provider == "anthropic":
+        credential_names = ["ANTHROPIC_API_KEY"]
+        credential_ready = bool(os.getenv("ANTHROPIC_API_KEY"))
+        package = "anthropic"
+    elif provider in {"openai", "azure"}:
+        credential_names = ["OPENAI_API_KEY"]
+        credential_ready = bool(os.getenv("OPENAI_API_KEY") or base_url)
+        package = "openai"
+    elif provider == "litellm":
+        credential_names = (
+            ["GEMINI_API_KEY", "GOOGLE_API_KEY"]
+            if model.startswith("gemini/")
+            else ["provider-specific API key"]
+        )
+        credential_ready = (
+            bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
+            if model.startswith("gemini/")
+            else True
+        )
+        package = "litellm"
+    else:
+        credential_names = [f"credentials for {provider}"]
+        credential_ready = False
+        package = provider
+    return {
+        "credential_names": credential_names,
+        "credential_ready": credential_ready,
+        "package": package,
+        "package_ready": importlib.util.find_spec(package) is not None,
+    }
+
+
+def _execution_mode_label() -> str:
+    """Provider/catalog-aware label for manual and autonomous execution readiness."""
+    try:
+        route = _default_execution_route()
+    except ValueError as exc:
+        return f"manual available; autonomous route configuration invalid: {exc}"
+    readiness = _provider_readiness(route)
+    ready = readiness["credential_ready"] and readiness["package_ready"]
+    state = "ready" if ready else "not ready"
+    return (
+        "manual (no API calls); autonomous "
+        f"catalog={route.provider_catalog or 'legacy'} profile={route.profile} "
+        f"provider={route.provider} model={route.model} is {state}"
+    )
 
 
 def _slugify(text: str) -> str:
@@ -151,7 +201,12 @@ def _pending_handoffs_from_state(state: dict) -> list[dict]:
     return [h for h in history if _handoff_acceptance_status(h) == "pending"]
 
 
-def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
+def _assemble_prompt(
+    project_id: str,
+    agent_id: str,
+    state: dict,
+    include_metadata: bool = False,
+) -> str | tuple[str, dict]:
     agents_dir = ROOT.parent / "agents"
     from core.engine.prompt_assembler import PromptAssembler
     from core.engine.agent_ids import normalize_agent_id
@@ -162,26 +217,48 @@ def _assemble_prompt(project_id: str, agent_id: str, state: dict) -> str:
     except FileNotFoundError:
         click.echo(f"[error] Agent template not found for '{canonical_agent_id}' in {agents_dir}", err=True)
         sys.exit(1)
-    # The assembler already computed the exact token count of the prompt it built.
-    # In manual (Claude Code) mode this is the INPUT-token cost of the upcoming turn —
-    # capture it so manual-mode work isn't counted as zero (ip-drift-004). Output/
-    # reasoning tokens live in the Claude Code session and must be added via
-    # `mas log-tokens --completion`. Non-fatal.
+    # Assembly is a preview, not proof of a provider call. Record its local estimate
+    # separately so capacity telemetry never masquerades as observed/billable usage.
     try:
-        from core.db import record_manual_tokens
-        record_manual_tokens(
+        from core.db import record_prompt_estimate
+        prompt_tokens = int(getattr(assembler, "last_token_count", 0) or 0)
+        prompt_metadata = getattr(assembler, "last_prompt_metadata", {}) or {}
+        record_prompt_estimate(
             project_id, canonical_agent_id,
-            tokens_prompt=int(getattr(assembler, "last_token_count", 0) or 0),
-            tokens_completion=0,
-            note=f"prompt assembled for {canonical_agent_id} (manual-mode input)",
+            estimated_prompt_tokens=prompt_tokens,
+            metadata=prompt_metadata,
+            note=f"prompt preview assembled for {canonical_agent_id}",
         )
     except Exception as exc:  # never block prompt assembly on telemetry
-        logger.debug("prompt-token capture failed (non-blocking): %s", exc)
-    return prompt
+        logger.debug("prompt-estimate capture failed (non-blocking): %s", exc)
+    metadata = getattr(assembler, "last_prompt_metadata", {}) or {}
+    return (prompt, metadata) if include_metadata else prompt
 
 
-def _emit_prompt(project_id: str, agent_id: str, assembled: str) -> None:
-    header = f"# Agent: {agent_id}  |  Project: {project_id}\n# Prompt length: {len(assembled)} chars\n#" + "-" * 60
+def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None) -> None:
+    header = f"# Agent: {agent_id}  |  Project: {project_id}\n# Prompt length: {len(assembled)} chars"
+    if selection is not None:
+        header += (
+            f"\n# Route: {selection.surface}/{selection.profile}/"
+            f"{selection.provider}/{selection.model}/"
+            f"{selection.enforcement_capability}"
+        )
+        hints = []
+        if selection.reasoning_effort:
+            hints.append(f"reasoning_effort={selection.reasoning_effort}")
+        if selection.launch_args:
+            hints.append("launch=" + " ".join(selection.launch_args))
+        if hints:
+            header += "\n# Route hint: " + " | ".join(hints)
+        accepted = ",".join(
+            str(candidate["model"]) for candidate in selection.candidates
+        )
+        header += (
+            f"\n# Dispatch: {selection.dispatch_id} | "
+            f"receipt={'required' if selection.verification_required else 'optional'}"
+            f" | accepted_models={accepted}"
+        )
+    header += "\n#" + "-" * 60
     out = sys.stdout.buffer if hasattr(sys.stdout, "buffer") else sys.stdout
     out.write((header + "\n" + assembled + "\n").encode("utf-8", errors="replace"))
 
@@ -220,7 +297,7 @@ class _MasGroup(click.Group):
 
 
 @click.group(cls=_MasGroup)
-@click.version_option("0.2.0", prog_name="mas")
+@click.version_option("0.3.0", prog_name="mas")
 def main():
     """Governed Multi-Agent Delivery System."""
 
@@ -517,6 +594,31 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
     else:
         add("ok", "open_handoffs", "No open handoffs")
 
+    # 4b. Standard-mode handoff trace integrity.
+    try:
+        from core.engine.lifecycle_guard import check_standard_handoff_trace
+        wf = state.get("workflow", {}) or {}
+        trace_relevant = (
+            status_val == "closed"
+            or bool(wf.get("completed_phases"))
+            or phase not in ("", "intake", "unknown")
+        )
+        if trace_relevant:
+            trace_result = check_standard_handoff_trace(state)
+            if trace_result.passed:
+                add("ok", "handoff_trace", "Standard handoff trace present")
+            else:
+                for violation in trace_result.violations:
+                    add(
+                        "fail",
+                        "handoff_trace",
+                        f"{violation.get('invariant')}: {violation.get('detail', '')}",
+                    )
+        else:
+            add("ok", "handoff_trace", "Not required before intake progression")
+    except Exception as exc:
+        add("warn", "handoff_trace", f"Cannot check handoff trace: {exc}")
+
     # 5. Snapshots after close
     if status_val == "closed":
         snapshots = list(project_dir.glob("shared_state_snapshot_*.yaml"))
@@ -558,6 +660,42 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
     except Exception as exc:
         add("warn", "skills", f"Cannot query skill events: {exc}")
 
+    # 8. Decision / task store consistency (G3)
+    try:
+        from core.engine.consistency_check import check_project as _consistency
+        report = _consistency(project_id, projects_root=projects_dir)
+        if report.ok:
+            add("ok", "consistency", "decision and task stores consistent")
+        else:
+            for f in report.findings:
+                sev = "fail" if f.get("severity") == "high" else "warn"
+                if f.get("check") == "decisions":
+                    add(sev, "consistency", f"{f['direction']} decisions {f.get('ids')}: {f['detail']}")
+                elif f.get("check") == "manual_loop_discipline":
+                    add(sev, "consistency", f"phases without handoffs {f.get('phases')}: {f['detail']}")
+                elif f.get("check") == "plan_board_identifier_drift":
+                    candidate_ids = [
+                        item.get("board_id") for item in f.get("candidates", [])
+                    ]
+                    add(
+                        sev,
+                        "consistency",
+                        f"semantic {f.get('entity_type')} ID drift "
+                        f"plan={f.get('plan_id')} board={candidate_ids} "
+                        f"ambiguous={bool(f.get('ambiguous'))}: {f['detail']}",
+                    )
+                elif f.get("check") == "decision_record_quality":
+                    add(
+                        sev,
+                        "consistency",
+                        f"incomplete decision records {f.get('decisions')}: {f['detail']}",
+                    )
+                else:
+                    add(sev, "consistency",
+                        f"task store drift state_only={f.get('state_only')} board_only={f.get('board_only')}")
+    except Exception as exc:
+        add("warn", "consistency", f"Cannot check consistency: {exc}")
+
     return checks
 
 
@@ -569,6 +707,10 @@ def _doctor_next_action(checks: list[tuple[str, str, str]], project_id: str, sta
         return f"Run `mas init {project_id}` or check the project ID."
     if "artifact" in fails:
         return "Create missing required artifacts before advancing the phase."
+    if "handoff_trace" in fails:
+        return "Restore governed handoff evidence or reopen and rerun through `mas prompt`/`mas ingest`."
+    if "consistency" in fails:
+        return "Reconcile decision/task store drift (decisions on disk are missing from canonical state)."
     if "consultation" in warns:
         return "Trigger required consultation: add `consultation_trigger` to next Master response."
     if "skills" in warns:
@@ -601,14 +743,42 @@ def doctor(project_id: str | None):
     def add(status: str, name: str, detail: str) -> None:
         checks.append((status, name, detail))
 
-    # Default execution path: manual (no API calls). Only `mas run` calls the Anthropic API.
+    # Default execution path: manual remains available without provider credentials.
     add("ok", "execution_mode", _execution_mode_label())
 
-    # API key is optional for manual Claude Code flow, required for `mas run`.
-    if os.getenv("ANTHROPIC_API_KEY"):
-        add("ok", "api_key", "ANTHROPIC_API_KEY detected")
-    else:
-        add("warn", "api_key", "ANTHROPIC_API_KEY missing (required for `mas run`, optional for manual `mas prompt` flow)")
+    # Resolve the configured autonomous catalog and report its actual adapter/key.
+    try:
+        route = _default_execution_route()
+        add(
+            "ok",
+            "execution_route",
+            f"catalog={route.provider_catalog or 'legacy'} profile={route.profile} "
+            f"provider={route.provider} model={route.model}",
+        )
+        readiness = _provider_readiness(route)
+        credential_label = " or ".join(readiness["credential_names"])
+        add(
+            "ok" if readiness["credential_ready"] else "warn",
+            "provider_credentials",
+            (
+                f"{credential_label} detected"
+                if readiness["credential_ready"]
+                else f"{credential_label} missing (required for this `mas run` route; "
+                     "manual `mas prompt` remains available)"
+            ),
+        )
+        add(
+            "ok" if readiness["package_ready"] else "warn",
+            "provider_adapter",
+            (
+                f"Python package {readiness['package']!r} available"
+                if readiness["package_ready"]
+                else f"Python package {readiness['package']!r} missing; install the "
+                     "matching optional dependency"
+            ),
+        )
+    except ValueError as exc:
+        add("fail", "execution_route", str(exc))
 
     env_path = ROOT.parent / ".env"
     if env_path.exists():
@@ -646,12 +816,54 @@ def doctor(project_id: str | None):
         add("ok", "registry", f"{_ra} agents, {_rs} skills registered")
     except Exception:
         add("warn", "registry", f"registry_index.yaml not readable at {registry_path}")
+    try:
+        from core.engine.capability_registry import CapabilityRegistry
+
+        projection_drift = CapabilityRegistry().capability_projection_drift()
+        if projection_drift:
+            add(
+                "warn",
+                "capability_registry_projection",
+                f"{len(projection_drift)} agent capability projection(s) differ "
+                "between YAML and SQLite; run capability registry sync after backup",
+            )
+        else:
+            add(
+                "ok",
+                "capability_registry_projection",
+                "YAML and SQLite agent capabilities agree",
+            )
+    except Exception as exc:
+        add(
+            "warn",
+            "capability_registry_projection",
+            f"projection check failed: {exc}",
+        )
 
     agents_dir = ROOT.parent / "agents"
     skills_dir = ROOT.parent / "skills"
     _da = len([p for p in agents_dir.glob("*.md") if p.name != "_utilities.md"]) if agents_dir.is_dir() else 0
     _ds = len(list(skills_dir.glob("*/SKILL.md"))) if skills_dir.is_dir() else 0
     add("ok", "inventory", f"{_da} agent docs, {_ds} skill packages on disk")
+
+    # Project-folder layout audit (non-fatal): surface ungrouped, split-brain,
+    # and stub project dirs so they can be cleaned up deliberately.
+    try:
+        from core.utils.config import audit_project_layout
+        layout = audit_project_layout(Path(projects_dir))
+        nfam = len(layout["families"])
+        add("ok", "project_layout",
+            f"{nfam} family folder(s); {len(layout['ungrouped'])} ungrouped project(s)")
+        if layout["split_brain"]:
+            add("warn", "project_split_brain",
+                f"{len(layout['split_brain'])} project id(s) in multiple locations: "
+                f"{layout['split_brain']}")
+        if layout["stubs"]:
+            add("warn", "project_stubs",
+                f"{len(layout['stubs'])} project dir(s) with no shared_state.yaml: "
+                f"{layout['stubs']}")
+    except Exception as exc:
+        add("warn", "project_layout", f"layout audit failed: {exc}")
 
     # Runtime mode: source-tree clone, or installed wheel backed by a workspace.
     from core.paths import is_installed, is_workspace_initialized, workspace_root
@@ -664,6 +876,7 @@ def doctor(project_id: str | None):
             f"installed wheel but no workspace — run `mas init-workspace` (creates {workspace_root()})")
 
     # Backend checks
+    active_db_path: Path | None = None
     try:
         from core.runtime_config import get_database_backend, get_vector_backend
         db_backend = get_database_backend()
@@ -679,8 +892,16 @@ def doctor(project_id: str | None):
         url = db_backend.get("url", "")
         if provider == "sqlite":
             db_path = _resolve_sqlite_path(url)
+            active_db_path = db_path
             init_db(db_path=db_path)
             add("ok", "database_backend", f"sqlite ready at {db_path}")
+            from core.db import _get_connection
+            with _get_connection(db_path) as conn:
+                integrity = conn.execute("PRAGMA quick_check").fetchone()[0]
+            if integrity == "ok":
+                add("ok", "database_integrity", "PRAGMA quick_check=ok")
+            else:
+                add("fail", "database_integrity", str(integrity))
         elif provider == "postgresql":
             from core.adapters import postgres_store
             with postgres_store.connect(url) as conn:
@@ -729,6 +950,38 @@ def doctor(project_id: str | None):
                 project_state = yaml.safe_load(f) or {}
         except Exception:
             project_state = None
+        if project_state is not None and active_db_path is not None:
+            try:
+                from core.engine.state_reconciler import reconcile_project
+
+                debt = reconcile_project(
+                    project_id,
+                    project_state,
+                    db_path=active_db_path,
+                    dry_run=True,
+                )
+                missing = int(debt.get("added", 0) or 0)
+                kinds = ", ".join(debt.get("kinds", []) or []) or "none"
+                health_checks.append(
+                    (
+                        "warn" if missing else "ok",
+                        "event_reconciliation",
+                        (
+                            f"{missing} canonical event(s) missing; kinds={kinds}; "
+                            "dry-run only"
+                            if missing
+                            else "canonical event projection synchronized (dry-run)"
+                        ),
+                    )
+                )
+            except Exception as exc:
+                health_checks.append(
+                    (
+                        "warn",
+                        "event_reconciliation",
+                        f"dry-run reconciliation check failed: {exc}",
+                    )
+                )
 
     status_icons = {"ok": "[ok]", "warn": "[warn]", "fail": "[fail]"}
     ok_count = warn_count = fail_count = 0
@@ -826,8 +1079,28 @@ def resume(project_id: str, show_prompt: bool):
     click.echo(f"\nNext action: invoke {next_agent}.")
 
     if show_prompt:
-        assembled = _assemble_prompt(project_id, next_agent, state)
-        _emit_prompt(project_id, next_agent, assembled)
+        assembled_result = _assemble_prompt(
+            project_id, next_agent, state, True
+        )
+        if isinstance(assembled_result, tuple):
+            assembled, prompt_metadata = assembled_result
+        else:
+            assembled, prompt_metadata = assembled_result, {}
+        from core.engine.execution_profile_router import ExecutionProfileRouter
+        router = ExecutionProfileRouter()
+        phase = state.get("core_identity", {}).get("current_phase", "")
+        selection = router.resolve(
+            next_agent,
+            phase,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+            surface="generic",
+        )
+        router.record_route_selection(
+            project_id,
+            selection,
+            prompt_metadata=prompt_metadata,
+        )
+        _emit_prompt(project_id, next_agent, assembled, selection)
 
 
 def _record_resume_skill_recommendations(project_id: str, state: dict, project_dir: Path) -> None:
@@ -923,7 +1196,6 @@ def status(project_id: str):
     if calls > 0:
         click.echo(f"Agent calls      : {calls}")
     click.echo(f"Tokens (total)   : {total_tok:,}")
-
     if pending_handoffs:
         click.echo("\nPending handoffs:")
         for h in pending_handoffs:
@@ -936,6 +1208,34 @@ def status(project_id: str):
                 f"{from_agent} → {to_agent} "
                 f"({task_description})"
             )
+
+
+# ---------------------------------------------------------------------------
+# mas consistency — read-only canonical-store and identifier-drift diagnostics
+# ---------------------------------------------------------------------------
+
+@main.command("consistency")
+@click.argument("project_id")
+@click.option(
+    "--repair-preview",
+    is_flag=True,
+    default=False,
+    help="Include explicit plan/board ID-alignment candidates; never writes.",
+)
+def consistency(project_id: str, repair_preview: bool):
+    """Check canonical stores and semantic plan/board identifier drift."""
+    _require_project(project_id)
+    from core.engine.consistency_check import check_project
+
+    report = check_project(project_id, projects_root=_get_projects_dir())
+    payload: dict[str, object] = {
+        "project_id": project_id,
+        "ok": report.ok,
+        "findings": report.findings,
+    }
+    if repair_preview:
+        payload["repair_preview"] = report.repair_preview
+    click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -1043,15 +1343,32 @@ def close(project_id: str):
         click.echo("[error] Cannot close project with pending handoffs.", err=True)
         sys.exit(1)
 
+    if current_status != "closed":
+        try:
+            from core.engine.lifecycle_guard import check_standard_handoff_trace
+            trace_result = check_standard_handoff_trace(state)
+            if trace_result.blocked:
+                for violation in trace_result.violations:
+                    click.echo(
+                        f"[error] {violation.get('invariant')}: "
+                        f"{violation.get('detail', '')}",
+                        err=True,
+                    )
+                sys.exit(1)
+        except SystemExit:
+            raise
+        except Exception as exc:
+            click.echo(f"[warn] Pre-close trace check failed: {exc}", err=True)
+
     if current_status == "closed":
-        click.echo(f"[info] Project is already closed — ensuring final artifacts and cleanup.")
+        click.echo("[info] Project is already closed — ensuring final artifacts and cleanup.")
     else:
         sm.snapshot(current_phase or "pre-close")
         sm.write("master_orchestrator", "core_identity", "status", "closed")
         if current_phase not in ("closed", ""):
             sm.write("master_orchestrator", "core_identity", "current_phase", "closed")
             sm.system_append("workflow", "completed_phases", current_phase)
-        click.echo(f"[ok] Project closed.")
+        click.echo("[ok] Project closed.")
 
     # Reload state after writes and preserve final human/readable artifacts.
     state = sm.load()
@@ -1379,11 +1696,22 @@ def tokens(project_id: str):
     completion = usage.get("total_completion", 0)
     calls      = usage.get("calls", 0)
 
+    preview_count = usage.get("preview_estimates", 0)
+    preview_tokens = usage.get("preview_prompt_tokens", 0)
     click.echo(f"\nToken usage — {project_id}")
-    click.echo(f"  Total calls      : {calls}")
+    click.echo(f"  Observed calls   : {calls}")
     click.echo(f"  Prompt tokens    : {prompt:,}")
     click.echo(f"  Completion tokens: {completion:,}")
     click.echo(f"  Total tokens     : {total:,}")
+    click.echo(f"  Preview estimates: {preview_count}")
+    click.echo(f"  Preview tokens   : {preview_tokens:,} (non-billable estimate)")
+    cached = usage.get("cached_input_tokens", 0)
+    cache_write = usage.get("cache_creation_input_tokens", 0)
+    billable = usage.get("billable_input_tokens", 0)
+    if cached or cache_write or billable:
+        click.echo(f"  Cached input     : {cached:,}")
+        click.echo(f"  Cache creation   : {cache_write:,}")
+        click.echo(f"  Billable input   : {billable:,}")
 
 
 # ---------------------------------------------------------------------------
@@ -1396,11 +1724,18 @@ def tokens(project_id: str):
               help="Agent the tokens are attributed to.")
 @click.option("--prompt", "prompt_tokens", type=int, default=0, help="Prompt/input tokens.")
 @click.option("--completion", "completion_tokens", type=int, default=0, help="Completion/output tokens.")
+@click.option("--cached-input", type=int, default=0,
+              help="Provider-reported input tokens served from prompt cache.")
+@click.option("--cache-write", type=int, default=0,
+              help="Provider-reported input tokens written to prompt cache.")
+@click.option("--billable-input", type=int, default=0,
+              help="Provider-reported billable input tokens.")
 @click.option("--estimate-file", type=click.Path(exists=True), default=None,
               help="Estimate prompt tokens from a text/prompt file (heuristic count).")
 @click.option("--note", default="", help="Optional note for the log entry.")
 def log_tokens(project_id: str, agent: str, prompt_tokens: int,
-               completion_tokens: int, estimate_file: str | None, note: str):
+               completion_tokens: int, cached_input: int, cache_write: int,
+               billable_input: int, estimate_file: str | None, note: str):
     """Record manual-mode (Claude Code) token usage so it isn't counted as zero.
 
     Manual mode burns real tokens the engine never auto-records (it only tracks tokens
@@ -1422,7 +1757,19 @@ def log_tokens(project_id: str, agent: str, prompt_tokens: int,
         click.echo("[error] Provide --prompt/--completion counts or --estimate-file.", err=True)
         sys.exit(1)
 
-    record_manual_tokens(project_id, agent, prompt_tokens, completion_tokens, note)
+    record_manual_tokens(
+        project_id,
+        agent,
+        prompt_tokens,
+        completion_tokens,
+        note,
+        measurement_source=(
+            "local_token_estimator" if estimate_file else "operator_reported"
+        ),
+        cached_input_tokens=cached_input,
+        cache_creation_input_tokens=cache_write,
+        billable_input_tokens=billable_input,
+    )
     total = prompt_tokens + completion_tokens
     click.echo(f"[ok] Logged {total:,} manual tokens "
                f"(prompt={prompt_tokens:,}, completion={completion_tokens:,}) to {project_id}.")
@@ -1607,7 +1954,6 @@ def explain(project_id: str, action_id: str | None, show_last: bool):
     click.echo("-" * 60)
     for key, value in event.items():
         if isinstance(value, (dict, list)):
-            import json
             click.echo(f"  {key}:\n{yaml.dump(value, default_flow_style=False, allow_unicode=True).rstrip()}")
         else:
             click.echo(f"  {key}: {value}")
@@ -1694,8 +2040,29 @@ def check_config():
     if sc_path.exists():
         try:
             with open(sc_path, encoding="utf-8") as f:
-                yaml.safe_load(f)
+                system_config = yaml.safe_load(f) or {}
             add("ok", "system_config.yaml", str(sc_path))
+            try:
+                from core.engine.execution_profile_router import ExecutionProfileRouter
+
+                router = ExecutionProfileRouter(system_config)
+                catalogs = (system_config.get("llm", {}) or {}).get(
+                    "provider_catalogs", {}
+                ) or {}
+                for catalog_name in catalogs:
+                    router.resolve(
+                        "catalog_validator",
+                        "validation",
+                        explicit_profile="standard",
+                        provider_catalog=catalog_name,
+                    )
+                add(
+                    "ok",
+                    "model_catalog_lifecycle",
+                    f"{len(catalogs)} catalog(s) active and within validation age",
+                )
+            except ValueError as exc:
+                add("fail", "model_catalog_lifecycle", str(exc))
         except yaml.YAMLError as e:
             add("fail", "system_config.yaml", f"YAML parse error: {e}")
     else:
@@ -1922,7 +2289,7 @@ def reopen(project_id: str, phase: str, reason: str):
         logger.debug("reject event recording failed (non-blocking): %s", exc)
 
     click.echo(f"[ok] Project reopened: status=active  phase={phase}")
-    click.echo(f"     Note: re-run `mas snapshot` to capture the reopen state.")
+    click.echo("     Note: re-run `mas snapshot` to capture the reopen state.")
 
 
 # ---------------------------------------------------------------------------
@@ -2075,6 +2442,169 @@ def migrate_graph():
 
 
 # ---------------------------------------------------------------------------
+# Model catalog, canary, and route-metrics operations
+# ---------------------------------------------------------------------------
+
+@main.command("model-catalogs")
+def model_catalogs():
+    """List configured model catalogs and validate their lifecycle metadata."""
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    from core.utils.config import load_config
+
+    llm = load_config().get("llm", {}) or {}
+    catalogs = llm.get("provider_catalogs", {}) or {}
+    if not catalogs:
+        raise click.ClickException("no provider catalogs are configured")
+    router = ExecutionProfileRouter()
+    click.echo("catalog      lifecycle  validated   provider   standard model")
+    click.echo("-" * 76)
+    for name, catalog in sorted(catalogs.items()):
+        try:
+            route = router.resolve(
+                "catalog_validator",
+                "validation",
+                explicit_profile="standard",
+                provider_catalog=name,
+            )
+        except ValueError as exc:
+            raise click.ClickException(f"catalog {name!r}: {exc}") from exc
+        click.echo(
+            f"{name:<12} {str(catalog.get('lifecycle_state', 'unknown')):<10} "
+            f"{str(catalog.get('validated_at', '')):<11} {route.provider:<10} "
+            f"{route.model}"
+        )
+
+
+@main.command("model-canary")
+@click.option("--catalog", "catalog_name", default=None,
+              help="Configured provider catalog to check.")
+@click.option("--all", "all_catalogs", is_flag=True, default=False,
+              help="Preview or check every configured provider catalog.")
+@click.option("--live", is_flag=True, default=False,
+              help="Execute one bounded non-governed provider request.")
+def model_canary(catalog_name: str | None, all_catalogs: bool, live: bool):
+    """Preview or run an opt-in, credentialed provider canary."""
+    from core.engine.model_canary import run_provider_canary
+    from core.utils.config import load_config
+
+    catalogs = (load_config().get("llm", {}) or {}).get("provider_catalogs", {}) or {}
+    if bool(catalog_name) == bool(all_catalogs):
+        raise click.ClickException("select exactly one of --catalog NAME or --all")
+    catalog_names = sorted(catalogs) if all_catalogs else [str(catalog_name)]
+    missing = [name for name in catalog_names if not isinstance(catalogs.get(name), dict)]
+    if missing:
+        available = ", ".join(sorted(catalogs)) or "<none>"
+        raise click.ClickException(
+            f"unknown provider catalog {missing[0]!r}; available: {available}"
+        )
+
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    router = ExecutionProfileRouter()
+    results: list[dict] = []
+    for name in catalog_names:
+        catalog = catalogs[name]
+        selection = router.resolve(
+            "catalog_validator",
+            "validation",
+            explicit_profile="standard",
+            provider_catalog=name,
+        )
+        if not live:
+            results.append(
+                {
+                    "catalog": name,
+                    "provider": selection.provider,
+                    "model": selection.model,
+                    "approved_candidates": selection.candidates,
+                    "status": "preview",
+                }
+            )
+            continue
+
+        route_action_id = router.record_route_selection("mas-system", selection)
+        route_selection = selection.to_dict()
+        route_selection["route_action_id"] = route_action_id
+
+        def _invoke(**kwargs):
+            from core.engine.agent_runner import AgentRunner
+
+            runner = AgentRunner(
+                model=str(kwargs["model"]),
+                provider=str(kwargs["provider"]),
+                route_selection=route_selection,
+            )
+            if not runner.available:
+                raise RuntimeError("provider adapter is unavailable")
+            result = runner.run(
+                "model_canary",
+                str(kwargs["prompt"]),
+                project_id="mas-system",
+                max_tokens=int(kwargs["max_output_tokens"]),
+            )
+            if result.get("error"):
+                raise RuntimeError("provider canary failed")
+            return {
+                "reported_provider": result.get("provider"),
+                "reported_model": result.get("reported_model"),
+            }
+
+        def _audit_sink(event: dict) -> None:
+            from core.engine.event_recorder import EventRecorder
+
+            EventRecorder().record_simple(
+                project_id="mas-system",
+                actor="model_canary",
+                action_type="decision_recorded",
+                intent="Bounded provider canary completed",
+                payload=event,
+            )
+
+        results.append(
+            run_provider_canary(
+                name,
+                catalog,
+                credential_lookup=lambda env_name: (
+                    os.getenv(env_name) if env_name else None
+                ),
+                invoke=_invoke,
+                audit_sink=_audit_sink,
+                provider=selection.provider,
+                model=selection.model,
+                approved_candidates=selection.candidates,
+            )
+        )
+    if not live:
+        for result in results:
+            click.echo(
+                f"[preview] catalog={result['catalog']} "
+                f"provider={result['provider']} model={result['model']}; "
+                "pass --live to execute the bounded canary"
+            )
+        return
+    payload: object = results if all_catalogs else results[0]
+    click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+@main.command("route-metrics")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Filter by provider catalog.")
+@click.option("--profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Filter by semantic profile.")
+@click.option("--db-path", type=click.Path(path_type=Path), default=None,
+              help="Override the SQLite database path.")
+def route_metrics(provider_catalog: str | None, profile: str | None, db_path: Path | None):
+    """Show privacy-safe aggregate route cost, latency, retry, and quality metrics."""
+    from core.db import aggregate_route_telemetry
+
+    kwargs = {"provider_catalog": provider_catalog, "profile": profile}
+    if db_path is not None:
+        kwargs["db_path"] = db_path
+    aggregate = aggregate_route_telemetry(**kwargs)
+    click.echo(json.dumps(aggregate, ensure_ascii=False, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
 # mas run — autonomous orchestration loop
 # ---------------------------------------------------------------------------
 
@@ -2086,7 +2616,25 @@ def migrate_graph():
               help="Skip human confirmation at phase boundaries.")
 @click.option("--phase", "target_phase", default=None, metavar="PHASE",
               help="Stop after this phase completes (e.g. 'specification').")
-def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
+@click.option("--profile", "execution_profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Explicit semantic profile for every autonomous dispatch.")
+@click.option("--model", "model_override", default=None,
+              help="Explicit model for every autonomous dispatch (requires --provider).")
+@click.option("--provider", "provider_override", default=None,
+              help="Explicit provider for every autonomous dispatch (requires --model).")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Configured provider catalog for autonomous dispatch.")
+def run(
+    project_id: str,
+    max_steps: int,
+    auto: bool,
+    target_phase: str | None,
+    execution_profile: str | None,
+    model_override: str | None,
+    provider_override: str | None,
+    provider_catalog: str | None,
+):
     """Run the autonomous orchestration loop for a project.
 
     Drives the project through intake -> specification -> planning phases,
@@ -2106,10 +2654,32 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig, StopReason
     from core.runtime_config import get_database_backend, get_vector_backend
 
-    runner = AgentRunner()
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    state = _load_state(project_id)
+    initial_phase = state.get("core_identity", {}).get("current_phase", "intake")
+    try:
+        initial_route = ExecutionProfileRouter().resolve(
+            "master_orchestrator",
+            initial_phase,
+            explicit_profile=execution_profile,
+            explicit_model=model_override,
+            explicit_provider=provider_override,
+            provider_catalog=provider_catalog,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    runner = AgentRunner(
+        model=initial_route.model,
+        provider=initial_route.provider,
+        route_selection=initial_route.to_dict(),
+    )
     if not runner.available:
         click.echo(
-            "[error] Live execution is mandatory. Set ANTHROPIC_API_KEY before running `mas run`.",
+            "[error] Live execution is mandatory, but the selected route is unavailable: "
+            f"provider={initial_route.provider} model={initial_route.model}. "
+            "Configure that provider's credentials/SDK or compatible endpoint before "
+            "running `mas run`.",
             err=True,
         )
         sys.exit(1)
@@ -2122,11 +2692,25 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
         max_steps=max_steps,
         auto=auto,
         target_phase=target_phase,
+        execution_profile=execution_profile,
+        model_override=model_override,
+        provider_override=provider_override,
+        provider_catalog=provider_catalog,
     )
 
     click.echo(f"\n[mas run] {project_id}")
     if auto:
         click.echo("  mode: auto (phase boundaries skipped)")
+    click.echo(
+        f"  route: catalog={initial_route.provider_catalog or 'legacy'} "
+        f"profile={initial_route.profile} provider={initial_route.provider} "
+        f"model={initial_route.model}"
+        + (
+            f" reasoning_effort={initial_route.reasoning_effort}"
+            if initial_route.reasoning_effort
+            else ""
+        )
+    )
     click.echo(f"  storage: db={db_backend['active_provider']} vector={'chromadb' if vector_backend.get('enabled') else 'disabled'}")
     click.echo("")
 
@@ -2154,19 +2738,66 @@ def run(project_id: str, max_steps: int, auto: bool, target_phase: str | None):
 
 
 # ---------------------------------------------------------------------------
-# mas prompt — assemble the next agent prompt (for Claude Code mode)
+# mas prompt — assemble the next agent prompt for any manual surface
 # ---------------------------------------------------------------------------
 
 @main.command()
 @click.argument("project_id")
 @click.argument("agent_id", required=False, default=None)
-def prompt(project_id: str, agent_id: str | None):
-    """Assemble and print the next agent's prompt for Claude Code mode.
+@click.option("--json", "as_json", is_flag=True, default=False,
+              help="Emit a structured manual execution envelope as JSON.")
+@click.option("--profile", "execution_profile", default=None,
+              type=click.Choice(["reasoning", "standard", "economy"]),
+              help="Explicit semantic execution profile override.")
+@click.option("--model", "model_override", default=None,
+              help="Explicit model override (requires --provider).")
+@click.option("--provider", "provider_override", default=None,
+              help="Explicit provider override (requires --model).")
+@click.option("--risk-level", default=None,
+              type=click.Choice(["low", "medium", "high", "critical"]),
+              help="Risk context used for routing escalation.")
+@click.option("--retry-count", default=0, type=click.IntRange(min=0), show_default=True)
+@click.option("--enforcement-capability", default=None,
+              help="Manual client capability, e.g. recommended or client_enforced.")
+@click.option("--surface", default="generic", show_default=True,
+              type=click.Choice(
+                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+              ),
+              help="Manual client surface for provider/model adapter hints.")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Provider catalog override (e.g. anthropic, openai, gemini).")
+@click.option(
+    "--available-model",
+    "available_models",
+    multiple=True,
+    help="Model available in the active client/plan; repeat to constrain routing.",
+)
+@click.option(
+    "--exclude-model",
+    "excluded_models",
+    multiple=True,
+    help="Model excluded by the active client/plan; repeat as needed.",
+)
+def prompt(
+    project_id: str,
+    agent_id: str | None,
+    as_json: bool,
+    execution_profile: str | None,
+    model_override: str | None,
+    provider_override: str | None,
+    risk_level: str | None,
+    retry_count: int,
+    enforcement_capability: str | None,
+    surface: str,
+    provider_catalog: str | None,
+    available_models: tuple[str, ...],
+    excluded_models: tuple[str, ...],
+):
+    """Assemble and print the next agent's prompt for manual/provider-neutral mode.
 
-    When ANTHROPIC_API_KEY is unavailable (Claude Pro only), use this command
-    to get the assembled prompt, then spawn the agent manually via Agent() in
-    Claude Code. The agent's wire-format response can then be applied to state
-    using the shared_state_manager and handoff_engine directly.
+    Use this command to get the governed prompt, run it in Claude Code, Codex,
+    ChatGPT, Gemini, Copilot, LM Studio, Ollama, or another LLM surface, then
+    apply the model's wire-format reply with `mas ingest`.
 
     If AGENT_ID is omitted, determines the next agent automatically from state.
 
@@ -2189,8 +2820,57 @@ def prompt(project_id: str, agent_id: str | None):
         from core.engine.agent_ids import normalize_agent_id
         agent_id = normalize_agent_id(agent_id) or agent_id
 
-    assembled = _assemble_prompt(project_id, agent_id, state)
-    _emit_prompt(project_id, agent_id, assembled)
+    assembled_result = _assemble_prompt(project_id, agent_id, state, True)
+    if isinstance(assembled_result, tuple):
+        assembled, prompt_metadata = assembled_result
+    else:  # Backward-compatible for integrations monkeypatching the helper.
+        assembled, prompt_metadata = assembled_result, {}
+    from core.engine.execution_profile_router import (
+        ExecutionProfileRouter,
+        build_manual_envelope,
+    )
+    router = ExecutionProfileRouter()
+    phase = state.get("core_identity", {}).get("current_phase", "")
+    effective_risk = (
+        risk_level
+        or state.get("project_definition", {}).get("risk_classification")
+    )
+    try:
+        selection = router.resolve(
+            agent_id,
+            phase,
+            explicit_profile=execution_profile,
+            explicit_model=model_override,
+            explicit_provider=provider_override,
+            risk_level=effective_risk,
+            retry_count=retry_count,
+            enforcement_capability=(
+                enforcement_capability or router.enforcement_for_surface(surface)
+            ),
+            surface=surface,
+            provider_catalog=provider_catalog,
+            available_models=(available_models or None),
+            excluded_models=(excluded_models or None),
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=prompt_metadata,
+    )
+    if as_json:
+        envelope = build_manual_envelope(
+            project_id,
+            agent_id,
+            phase,
+            assembled,
+            selection,
+            prompt_metadata=prompt_metadata,
+        )
+        click.echo(json.dumps(envelope, ensure_ascii=False))
+        return
+    _emit_prompt(project_id, agent_id, assembled, selection)
 
 
 # ---------------------------------------------------------------------------
@@ -2205,7 +2885,56 @@ def prompt(project_id: str, agent_id: str | None):
               help="File with the LLM's raw response (default: read stdin).")
 @click.option("--show-prompt/--no-show-prompt", default=True,
               help="After applying, print the next agent prompt (default: yes).")
-def ingest(project_id: str, agent_id: str | None, response_file: str | None, show_prompt: bool):
+@click.option("--surface", default="generic", show_default=True,
+              type=click.Choice(
+                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+              ),
+              help="Manual client surface for the automatically selected next route.")
+@click.option("--catalog", "provider_catalog", default=None,
+              help="Provider catalog for the automatically selected next route.")
+@click.option("--dispatch-id", default=None,
+              help="Dispatch ID emitted by `mas prompt`.")
+@click.option("--reported-provider", default=None,
+              help="Provider actually used by the manual client.")
+@click.option("--reported-model", default=None,
+              help="Model actually reported/used by the manual client.")
+@click.option("--provider-request-id", default=None,
+              help="Opaque request ID returned by the provider.")
+@click.option("--input-tokens", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported input-token count.")
+@click.option("--output-tokens", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported output-token count.")
+@click.option("--cached-input", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported cached input tokens.")
+@click.option("--cache-write", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported cache-creation input tokens.")
+@click.option("--billable-input", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported billable input tokens.")
+@click.option(
+    "--verification-source",
+    type=click.Choice(["client", "provider", "operator"]),
+    default="client",
+    show_default=True,
+    help="Source of the provider/model claim in the receipt.",
+)
+def ingest(
+    project_id: str,
+    agent_id: str | None,
+    response_file: str | None,
+    show_prompt: bool,
+    surface: str,
+    provider_catalog: str | None,
+    dispatch_id: str | None,
+    reported_provider: str | None,
+    reported_model: str | None,
+    provider_request_id: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input: int | None,
+    cache_write: int | None,
+    billable_input: int | None,
+    verification_source: str,
+):
     """Ingest an LLM response (from ANY provider) and apply it to governed state.
 
     The provider-agnostic manual loop:  `mas prompt` -> run in any LLM -> `mas ingest`.
@@ -2230,8 +2959,40 @@ def ingest(project_id: str, agent_id: str | None, response_file: str | None, sho
     from core.engine.shared_state_manager import SharedStateManager
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig
 
+    receipt = None
+    if any(
+        value is not None and value != ""
+        for value in (
+            dispatch_id,
+            reported_provider,
+            reported_model,
+            provider_request_id,
+            input_tokens,
+            output_tokens,
+            cached_input,
+            cache_write,
+            billable_input,
+        )
+    ):
+        receipt = {
+            "dispatch_id": dispatch_id,
+            "reported_provider": reported_provider,
+            "reported_model": reported_model,
+            "provider_request_id": provider_request_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input,
+            "cache_creation_input_tokens": cache_write,
+            "billable_input_tokens": billable_input,
+            "verification_source": verification_source,
+        }
     try:
-        res = apply_ingest(project_id, raw, agent_id)
+        res = apply_ingest(
+            project_id,
+            raw,
+            agent_id,
+            dispatch_receipt=receipt,
+        )
     except Exception as exc:
         click.echo(f"[error] could not record handoff: {exc}", err=True)
         sys.exit(1)
@@ -2244,10 +3005,31 @@ def ingest(project_id: str, agent_id: str | None, response_file: str | None, sho
         click.echo(f"  parse warnings: {', '.join(res.parse_errors)}")
     if res.knowledge_request:
         click.echo(f"  KNOWLEDGE_REQUEST: {res.knowledge_request}")
+    if res.dispatch_verification:
+        verification = res.dispatch_verification
+        click.echo(
+            f"  dispatch receipt: {verification.get('status')} "
+            f"(required={str(bool(verification.get('required'))).lower()})"
+        )
     click.echo(
         f"  recorded handoff {res.handoff_id} "
         f"(decisions={res.decisions} artifacts={res.artifacts})"
     )
+    if res.total_tokens:
+        verification_status = str(
+            (res.dispatch_verification or {}).get("status") or ""
+        )
+        token_label = (
+            "provider-observed tokens"
+            if verification_status == "provider_reported"
+            else "attested tokens"
+            if verification_status in {"client_attested", "operator_attested"}
+            else "estimated tokens"
+        )
+        click.echo(
+            f"  {token_label}: prompt={res.prompt_tokens:,} "
+            f"completion={res.completion_tokens:,} total={res.total_tokens:,}"
+        )
 
     if res.action == "advance_phase":
         click.echo(f"  phase advanced: {res.phase_before} -> {res.phase_after}")
@@ -2279,7 +3061,36 @@ def ingest(project_id: str, agent_id: str | None, response_file: str | None, sho
     else:
         nxt = loop._determine_next_agent(state)
     click.echo(f"\n# NEXT: run this prompt in any LLM, then `mas ingest {project_id}` again\n")
-    _emit_prompt(project_id, nxt, _assemble_prompt(project_id, nxt, state))
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    router = ExecutionProfileRouter()
+    try:
+        selection = router.resolve(
+            nxt,
+            cur_phase,
+            risk_level=state.get("project_definition", {}).get("risk_classification"),
+            surface=surface,
+            provider_catalog=provider_catalog,
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    assembled_result = _assemble_prompt(
+        project_id, nxt, state, True
+    )
+    if isinstance(assembled_result, tuple):
+        assembled_next, prompt_metadata = assembled_result
+    else:
+        assembled_next, prompt_metadata = assembled_result, {}
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=prompt_metadata,
+    )
+    _emit_prompt(
+        project_id,
+        nxt,
+        assembled_next,
+        selection,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2302,14 +3113,21 @@ def registry():
 
 
 @registry.command("seed")
-def registry_seed():
+@click.option(
+    "--db-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    default=None,
+    help="Seed an alternate SQLite registry DB (useful for isolated validation).",
+)
+def registry_seed(db_path: Path | None):
     """Seed all registry tables from the current filesystem state.
 
     Example: mas registry seed
     """
     try:
         from core.utils.registry_seed import seed
-        counts = seed()
+        from core.utils import log_helpers
+        counts = seed(db_path=db_path or log_helpers.DB_PATH)
         for table, n in counts.items():
             click.echo(f"  {table}: {n} rows")
         click.echo("[ok] Registry seeded.")

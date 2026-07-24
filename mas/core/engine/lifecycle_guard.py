@@ -89,6 +89,10 @@ class LifecycleGuard:
                 "severity": "block",
             })
 
+        trace_result = check_standard_handoff_trace(shared_state)
+        violations.extend(trace_result.violations)
+        warnings.extend(trace_result.warnings)
+
         # no-close-with-open-questions
         open_q = shared_state.get("decisions", {}).get("open_questions", [])
         if open_q:
@@ -121,6 +125,90 @@ class LifecycleGuard:
                 }],
             )
         return GuardResult(passed=True)
+
+
+# ---------------------------------------------------------------------------
+# Standard-mode trace integrity
+# ---------------------------------------------------------------------------
+
+def _project_mode(shared_state: dict) -> str:
+    workflow = shared_state.get("workflow", {}) or {}
+    core_identity = shared_state.get("core_identity", {}) or {}
+    return str(workflow.get("mode") or core_identity.get("mode") or "standard")
+
+
+def _handoff_status(handoff: dict) -> str:
+    acceptance = handoff.get("acceptance", {})
+    if isinstance(acceptance, dict) and acceptance.get("status"):
+        return str(acceptance["status"])
+    return str(handoff.get("status", ""))
+
+
+def _is_accepted_inquirer_intake_handoff(handoff: dict) -> bool:
+    if _handoff_status(handoff) != "accepted":
+        return False
+    if handoff.get("phase") != "intake":
+        return False
+    return "inquirer_agent" in {
+        str(handoff.get("from_agent", "")),
+        str(handoff.get("to_agent", "")),
+    }
+
+
+def check_standard_handoff_trace(shared_state: dict) -> GuardResult:
+    """Require a real handoff trace for standard MAS projects.
+
+    Lite mode intentionally remains flexible. Standard mode is the governed
+    multi-phase workflow, so closing or post-intake operation without any
+    handoff evidence is treated as a blocking governance gap.
+    """
+    if _project_mode(shared_state) != "standard":
+        return GuardResult(passed=True)
+
+    workflow = shared_state.get("workflow", {}) or {}
+    history = workflow.get("handoff_history", []) or []
+    violations: list[dict[str, Any]] = []
+
+    if not history:
+        violations.append({
+            "invariant": "standard-project-requires-handoffs",
+            "detail": (
+                "standard MAS projects must record governed handoffs; use "
+                "mas prompt/mas ingest or mas run instead of direct state edits"
+            ),
+            "severity": "block",
+        })
+
+    if not any(_is_accepted_inquirer_intake_handoff(h) for h in history):
+        violations.append({
+            "invariant": "standard-project-requires-inquirer-intake",
+            "detail": (
+                "standard MAS intake must include an accepted inquirer_agent "
+                "handoff before later phase completion or closure"
+            ),
+            "severity": "block",
+        })
+
+    return GuardResult(passed=not violations, violations=violations)
+
+
+def check_standard_intake_advance(phase: str, mode: str, acting_agent: str) -> GuardResult:
+    """Block standard-mode intake advancement by anyone except inquirer_agent."""
+    if mode != "standard" or phase != "intake":
+        return GuardResult(passed=True)
+    if acting_agent == "inquirer_agent":
+        return GuardResult(passed=True)
+    return GuardResult(
+        passed=False,
+        violations=[{
+            "invariant": "standard-intake-requires-inquirer",
+            "detail": (
+                f"acting_agent={acting_agent}; standard intake must be ingested "
+                "as inquirer_agent"
+            ),
+            "severity": "block",
+        }],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +271,62 @@ def expire_stale_handoffs(
             still_pending.append(handoff)
 
     return still_pending, auto_expired
+
+
+# ---------------------------------------------------------------------------
+# G1 — execution-entry task-board gate
+# (proj-YYYYMMDD-NNN-mas-manual-loop-guardrails)
+# ---------------------------------------------------------------------------
+
+def check_execution_entry(
+    task_board_data: dict | None,
+    *,
+    mode: str = "standard",
+) -> GuardResult:
+    """Guard the transition into the *execution* phase.
+
+    A project must have a materialized task board (>= 1 task) before it enters
+    execution — the gap that let proj-YYYYMMDD-NNN cross into execution with an
+    empty board. In standard mode an empty board blocks; in lite mode it warns
+    only. Pure function (no filesystem) so callers may attempt
+    ``TaskBoard.sync_from_execution_plan()`` first and re-check.
+    """
+    tasks = (task_board_data or {}).get("tasks") or []
+    if tasks:
+        return GuardResult(passed=True)
+
+    entry = {
+        "invariant": "no-execution-without-task-board",
+        "detail": (
+            "task board has no tasks; populate it (or sync from the execution "
+            "plan) before entering execution"
+        ),
+        "severity": "block",
+    }
+    if mode == "lite":
+        entry["severity"] = "warn"
+        return GuardResult(passed=True, warnings=[entry])
+    return GuardResult(passed=False, violations=[entry])
+
+
+def check_phase_transition(
+    *,
+    phase: str,
+    target_phase: str,
+    mode: str,
+    project_dir: Path,
+    task_board_data: dict | None = None,
+) -> GuardResult:
+    """Apply the shared exit-artifact and execution-entry transition contract."""
+    artifact_result = LifecycleGuard().check_phase_artifacts(phase, project_dir)
+    violations = list(artifact_result.violations)
+    warnings = list(artifact_result.warnings)
+    if target_phase == "execution":
+        execution_result = check_execution_entry(task_board_data, mode=mode)
+        violations.extend(execution_result.violations)
+        warnings.extend(execution_result.warnings)
+    return GuardResult(
+        passed=not violations,
+        violations=violations,
+        warnings=warnings,
+    )

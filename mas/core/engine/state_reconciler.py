@@ -11,9 +11,9 @@ synthesizes the canonical lifecycle/decision events into agent_events for any pr
 that is missing them.
 
 Design:
-  - IDEMPOTENT: each synthesized event carries payload {"reconciled": true}. A project is
-    skipped if it already has reconciled (or natively-recorded) events of that kind, so
-    re-running never double-counts.
+  - EVENT-IDEMPOTENT: each canonical event has a deterministic reconcile_key. Existing
+    native and reconciled events are mapped to the same keys, so later state additions
+    are appended without replaying older events.
   - LOSSLESS-DIRECTIONAL: we never delete or mutate existing events; we only add missing
     canonical ones. Native events (from `mas init`/`mas close`) always win — we only fill
     gaps.
@@ -25,7 +25,8 @@ Canonical events synthesized (taxonomy names from foundation/event_types.yaml):
 """
 from __future__ import annotations
 
-import glob
+import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -41,21 +42,59 @@ PROJECTS_DIR = ROOT / "projects"
 _ACTOR = "master_orchestrator"
 
 
-def _existing_action_types(conn, project_id: str) -> set[str]:
+def _decision_key(decision: object) -> str:
+    if isinstance(decision, dict):
+        decision_id = decision.get("decision_id") or decision.get("id")
+        if decision_id:
+            return f"decision_recorded:{decision_id}"
+    encoded = json.dumps(
+        decision, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+    return f"decision_recorded:sha256-{digest}"
+
+
+def _existing_reconcile_keys(conn, project_id: str) -> set[str]:
+    """Map both native and reconciled lifecycle events to canonical event keys."""
     rows = conn.execute(
-        "SELECT DISTINCT action_type FROM agent_events WHERE project_id=?",
+        "SELECT action_type, intent, payload FROM agent_events WHERE project_id=?",
         (project_id,),
     ).fetchall()
-    return {r[0] for r in rows}
-
-
-def _reconciled_count(conn, project_id: str) -> int:
-    """How many already-reconciled events this project has (idempotency marker)."""
-    rows = conn.execute(
-        "SELECT COUNT(*) FROM agent_events WHERE project_id=? AND payload LIKE '%\"reconciled\": true%'",
-        (project_id,),
-    ).fetchone()
-    return rows[0] if rows else 0
+    keys: set[str] = set()
+    for row in rows:
+        action_type = row[0]
+        intent = str(row[1] or "")
+        try:
+            payload = json.loads(row[2] or "{}")
+        except Exception:
+            payload = {}
+        payload = payload.get("params", {}).get("inputs", payload)
+        explicit = payload.get("reconcile_key")
+        if explicit:
+            keys.add(str(explicit))
+            continue
+        if action_type == "project_initialized":
+            keys.add("project_initialized")
+        elif action_type == "phase_transition":
+            phase = (
+                payload.get("from_phase")
+                or payload.get("completed_phase")
+                or payload.get("phase")
+            )
+            if not phase and intent.lower().startswith("phase completed:"):
+                phase = intent.split(":", 1)[1].split("(", 1)[0].strip()
+            if phase:
+                keys.add(f"phase_transition:{phase}")
+        elif action_type in {"decision_recorded", "decision_made"}:
+            decision = payload.get("decision")
+            if decision is None:
+                decision = {
+                    "decision_id": payload.get("decision_id") or payload.get("id")
+                }
+            keys.add(_decision_key(decision))
+        elif action_type == "project_closed":
+            keys.add("project_closed")
+    return keys
 
 
 def reconcile_project(project_id: str, state: dict, db_path: Path = DB_PATH,
@@ -66,53 +105,58 @@ def reconcile_project(project_id: str, state: dict, db_path: Path = DB_PATH,
     decisions = (state.get("decisions", {}) or {}).get("decision_log", []) or []
 
     with _get_connection(db_path) as conn:
-        existing = _existing_action_types(conn, project_id)
-        already_reconciled = _reconciled_count(conn, project_id)
+        existing = _existing_reconcile_keys(conn, project_id)
 
-    # If this project already has reconciled events, treat it as done (idempotent).
-    if already_reconciled > 0:
-        return {"project_id": project_id, "skipped": "already_reconciled", "added": 0}
-
-    planned: list[tuple[str, str, dict]] = []  # (action_type, intent, payload)
+    planned: list[tuple[str, str, str, dict]] = []
 
     # 1. project_initialized — only if not natively recorded
-    if "project_initialized" not in existing and ci.get("created_at"):
+    key = "project_initialized"
+    if key not in existing and ci.get("created_at"):
         planned.append((
+            key,
             "project_initialized",
             f"Project initialized in {wf.get('mode', 'standard')} mode (reconciled)",
-            {"reconciled": True, "mode": wf.get("mode", "standard"),
+            {"reconciled": True, "reconcile_key": key,
+             "mode": wf.get("mode", "standard"),
              "created_at": ci.get("created_at")},
         ))
 
-    # 2. phase_transition — one per completed phase, if none natively recorded
-    if "phase_transition" not in existing:
-        for ph in wf.get("completed_phases", []) or []:
+    # 2. phase_transition — one key per completed phase
+    for ph in wf.get("completed_phases", []) or []:
+        key = f"phase_transition:{ph}"
+        if key not in existing:
             planned.append((
+                key,
                 "phase_transition",
                 f"Phase completed: {ph} (reconciled)",
-                {"reconciled": True, "phase": ph},
+                {"reconciled": True, "reconcile_key": key, "phase": ph},
             ))
 
-    # 3. decision_recorded — one per decision_log entry, if none natively recorded
-    if "decision_recorded" not in existing:
-        for d in decisions:
+    # 3. decision_recorded — one key per decision
+    for d in decisions:
+        key = _decision_key(d)
+        if key not in existing:
             did = d.get("decision_id", "?") if isinstance(d, dict) else "?"
             planned.append((
+                key,
                 "decision_recorded",
                 f"Decision {did} (reconciled)",
-                {"reconciled": True, "decision": d},
+                {"reconciled": True, "reconcile_key": key, "decision": d},
             ))
 
     # 4. project_closed — only if status closed and not natively recorded
-    if ci.get("status") == "closed" and "project_closed" not in existing:
+    key = "project_closed"
+    if ci.get("status") == "closed" and key not in existing:
         planned.append((
+            key,
             "project_closed",
             "Project closed (reconciled)",
-            {"reconciled": True, "final_phase": ci.get("current_phase", "closed")},
+            {"reconciled": True, "reconcile_key": key,
+             "final_phase": ci.get("current_phase", "closed")},
         ))
 
     if not dry_run:
-        for action_type, intent, payload in planned:
+        for _key, action_type, intent, payload in planned:
             append_event(
                 project_id=project_id,
                 agent_id=_ACTOR,
@@ -124,7 +168,7 @@ def reconcile_project(project_id: str, state: dict, db_path: Path = DB_PATH,
             )
 
     return {"project_id": project_id, "added": len(planned),
-            "kinds": sorted({p[0] for p in planned})}
+            "kinds": sorted({p[1] for p in planned})}
 
 
 def reconcile_all(db_path: Path = DB_PATH, dry_run: bool = False,

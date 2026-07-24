@@ -78,23 +78,36 @@ mas init my-project
 # 3. Get the assembled prompt for any agent (useful for debugging or manual spawning)
 mas prompt proj-YYYYMMDD-NNN-my-project               # next agent auto-detected
 mas prompt proj-YYYYMMDD-NNN-my-project inquirer_agent
+mas prompt proj-YYYYMMDD-NNN-my-project product_manager_agent --surface claude --json
 
 # 4. Check status
 mas status proj-YYYYMMDD-NNN-my-project
 ```
 
-### Mode 2 — `mas run` CLI (requires ANTHROPIC_API_KEY with credits)
+Apply `routing.model` at agent invocation, then return
+`dispatch.dispatch_id`, actual provider, and actual model through
+`mas ingest`/`mas_ingest`. Planning roles keep `reasoning`; Claude selects
+Fable first and Opus 4.8 only after declared exclusion/unavailability or
+refusal. Manual receipts are attestations unless the provider reports identity.
+
+### Mode 2 — `mas run` CLI (selected provider credential + adapter)
 
 ```powershell
-# 1. Set your API key
-$env:ANTHROPIC_API_KEY = "<your-api-key>"
-# Or: add ANTHROPIC_API_KEY=<your-api-key> to .env at repo root
+# 1. Select a catalog and set its credential (example: OpenAI)
+$env:MAS_MODEL_CATALOG = "openai"
+$env:OPENAI_API_KEY = "<your-api-key>"
+# Anthropic uses ANTHROPIC_API_KEY; Gemini/LiteLLM uses GEMINI_API_KEY.
 
 # 2. Run the loop
 mas run proj-YYYYMMDD-NNN-my-project
 
 # 3. Token usage
 mas tokens proj-YYYYMMDD-NNN-my-project
+
+# Manual mode token accounting
+# `mas prompt` records a non-billable preview estimate.
+# `mas ingest` records an observed response with heuristic token counting.
+# Use `mas log-tokens` for exact provider/cache/billable counts or corrections.
 
 # 4. Maintenance
 mas db rebuild-fts
@@ -146,6 +159,13 @@ steps to keep evaluation metrics meaningful:
 - [ ] `intake/clarified_spec.yaml` on disk — written by inquirer_agent (phase gate)
 - [ ] Task board populated — at least 1 milestone + 1 task per deliverable (scope_adherence gate)
 
+> **Enforced across manual/MCP surfaces:** `lifecycle_guard.check_phase_transition`
+> applies the departing phase's artifact contract before any state or handoff
+> mutation and composes the task-board gate for standard-mode execution. Use a
+> formal handoff for delegated work and apply phase changes through
+> `mas ingest`/`mas_ingest`; a valid transition snapshots the phase and records
+> one typed event.
+
 **During execution — HARD GATES:**
 - [ ] Log each significant decision to `decisions.decision_log` (minimum 1 per phase):
   ```python
@@ -196,10 +216,11 @@ intake → specification → planning → capability_discovery → execution
        → review → evaluation → improvement → closed
 ```
 
-Each phase transition requires:
-1. Exit criteria met (verified by Master)
-2. Shared state snapshot (`uv run mas snapshot <id>`)
-3. Phase recorded in `workflow.completed_phases`
+Each phase transition requires the current phase's artifact contract to pass.
+Standard-mode execution additionally requires a populated canonical task board.
+When `mas ingest` applies a valid transition, it snapshots the departing phase,
+updates `workflow.completed_phases`, and records one typed `phase_transition`
+event. Do not duplicate these mutations by hand.
 
 ### Review-driven projects — re-baseline before planning (proj-008 / prop-008-004)
 
@@ -285,7 +306,7 @@ Modules in `mas/core/engine/` (engine subpackage — use full path):
 | `spawn_policy.py` | `python mas/core/engine/spawn_policy.py` | Spawn validation; `LITE_MODE_NO_SPAWN` check |
 | `training_engine.py` | `python mas/core/engine/training_engine.py` | Proposal generation, backlog management |
 | `consultation_engine.py` | `python mas/core/engine/consultation_engine.py` | Consultation lifecycle, synthesis |
-| `agent_runner.py` | — (library) | Anthropic SDK wrapper; gated on `ANTHROPIC_API_KEY`; logs token usage |
+| `agent_runner.py` | — (library) | Provider-adapter runner for Anthropic, OpenAI-compatible, LiteLLM, and custom transports; logs token and route telemetry |
 | `prompt_assembler.py` | — (library) | State projection + FTS5-aware prompt building |
 | `access_control.py` | — (library) | Field-level write permissions matrix |
 | `skill_bridge.py` | — (library) | Agent-to-skill gateway with auth matrix |

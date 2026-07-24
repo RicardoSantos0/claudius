@@ -57,6 +57,18 @@ jobs:
         run: |
           git archive HEAD --format=tar -o "${RUNNER_TEMP}/test_archive.tar"
           uv run python scripts/check_archive_clean.py "${RUNNER_TEMP}/test_archive.tar"
+      - name: MAS discipline marker
+        if: github.event_name == 'push'
+        run: |
+          git log -1 --pretty=%B > "${RUNNER_TEMP}/commit_message.txt"
+          author_email="$(git log -1 --pretty=%ae)"
+          if [ "${author_email}" = "49699333+dependabot[bot]@users.noreply.github.com" ]; then
+            printf '\nMAS-BYPASS: GitHub Dependabot-authored dependency maintenance\n' \
+              >> "${RUNNER_TEMP}/commit_message.txt"
+          fi
+          uv run python scripts/check_mas_discipline.py \
+            --message-file "${RUNNER_TEMP}/commit_message.txt" \
+            --skip-project-state
 
   test:
     name: Tests (py${{ matrix.python-version }})

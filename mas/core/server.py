@@ -103,9 +103,22 @@ def mas_decisions(project_id: str) -> str:
 
 @mcp.tool()
 def mas_milestones(project_id: str) -> str:
-    """Return execution milestones and tasks for a project."""
-    ex = _sm(project_id).load().get("execution", {})
-    return _yaml({"milestones": ex.get("milestones", []), "tasks": ex.get("tasks", [])})
+    """Return execution milestones and tasks for a project.
+
+    Prefers the TaskBoard (canonical, matching mas_list_tasks / mas_create_task and
+    the evaluator); falls back to the legacy shared_state.execution view only when
+    the board is empty. This ends the divergence where mas_milestones showed empty
+    while the materialized board was populated. mas_consistency_check flags any
+    remaining drift between the two (G3)."""
+    from core.engine.task_board import TaskBoard
+    board = TaskBoard(project_id)
+    milestones = board.list_milestones()
+    tasks = board.list_tasks()
+    if not milestones and not tasks:
+        ex = _sm(project_id).load().get("execution", {}) or {}
+        milestones = ex.get("milestones", [])
+        tasks = ex.get("tasks", [])
+    return _yaml({"milestones": milestones, "tasks": tasks})
 
 
 @mcp.tool()
@@ -149,7 +162,228 @@ def mas_prompt(project_id: str, agent_id: str = "") -> str:
     else:
         aid = OrchestrationLoop(LoopConfig(project_id=project_id))._determine_next_agent(state)
     agents_dir = mas_root().parent / "agents"
-    return PromptAssembler(agents_dir=agents_dir).assemble(aid, state)
+    assembler = PromptAssembler(agents_dir=agents_dir)
+    prompt_text = assembler.assemble(aid, state)
+    try:
+        from core.db import record_prompt_estimate
+        record_prompt_estimate(
+            project_id,
+            aid,
+            assembler.last_token_count,
+            metadata=assembler.last_prompt_metadata,
+            note=f"MCP prompt preview assembled for {aid}",
+        )
+    except Exception:
+        pass
+    return prompt_text
+
+
+@mcp.tool()
+def mas_prompt_envelope(
+    project_id: str,
+    agent_id: str = "",
+    execution_profile: str = "",
+    model_override: str = "",
+    provider_override: str = "",
+    risk_level: str = "",
+    retry_count: int = 0,
+    enforcement_capability: str = "",
+    surface: str = "generic",
+    provider_catalog: str = "",
+    available_models: str = "",
+    excluded_models: str = "",
+) -> str:
+    """Return a structured provider-neutral manual execution envelope as YAML."""
+    from core.engine.agent_ids import normalize_agent_id
+    from core.engine.execution_profile_router import (
+        ExecutionProfileRouter,
+        build_manual_envelope,
+    )
+    from core.engine.orchestration_loop import LoopConfig, OrchestrationLoop
+    from core.engine.prompt_assembler import PromptAssembler
+    from core.paths import mas_root
+
+    state = _sm(project_id).load()
+    aid = (
+        normalize_agent_id(agent_id) or agent_id
+        if agent_id
+        else OrchestrationLoop(LoopConfig(project_id=project_id))._determine_next_agent(state)
+    )
+    phase = state.get("core_identity", {}).get("current_phase", "")
+    assembler = PromptAssembler(agents_dir=mas_root().parent / "agents")
+    prompt_text = assembler.assemble(aid, state)
+    router = ExecutionProfileRouter()
+    selection = router.resolve(
+        aid,
+        phase,
+        explicit_profile=execution_profile or None,
+        explicit_model=model_override or None,
+        explicit_provider=provider_override or None,
+        risk_level=(
+            risk_level
+            or state.get("project_definition", {}).get("risk_classification")
+            or None
+        ),
+        retry_count=max(0, retry_count),
+        enforcement_capability=(
+            enforcement_capability or router.enforcement_for_surface(surface)
+        ),
+        surface=surface,
+        provider_catalog=provider_catalog or None,
+        available_models=(
+            [value.strip() for value in available_models.split(",") if value.strip()]
+            or None
+        ),
+        excluded_models=(
+            [value.strip() for value in excluded_models.split(",") if value.strip()]
+            or None
+        ),
+    )
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=assembler.last_prompt_metadata,
+    )
+    try:
+        from core.db import record_prompt_estimate
+        record_prompt_estimate(
+            project_id,
+            aid,
+            assembler.last_token_count,
+            metadata=assembler.last_prompt_metadata,
+            note=f"MCP prompt-envelope preview assembled for {aid}",
+        )
+    except Exception:
+        pass
+    return _yaml(
+        build_manual_envelope(
+            project_id,
+            aid,
+            phase,
+            prompt_text,
+            selection,
+            prompt_metadata=assembler.last_prompt_metadata,
+        )
+    )
+
+
+@mcp.tool()
+def mas_model_catalogs() -> str:
+    """List provider-neutral model catalogs after lifecycle validation."""
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    from core.utils.config import load_config
+
+    catalogs = (load_config().get("llm", {}) or {}).get("provider_catalogs", {}) or {}
+    router = ExecutionProfileRouter()
+    rows = []
+    for name, catalog in sorted(catalogs.items()):
+        route = router.resolve(
+            "catalog_validator",
+            "validation",
+            explicit_profile="standard",
+            provider_catalog=name,
+        )
+        rows.append({
+            "catalog": name,
+            "lifecycle_state": catalog.get("lifecycle_state"),
+            "validated_at": catalog.get("validated_at"),
+            "provider": route.provider,
+            "model": route.model,
+        })
+    return _yaml(rows)
+
+
+@mcp.tool()
+def mas_model_canary(catalog_name: str, live: bool = False) -> str:
+    """Preview or explicitly run one bounded credentialed provider canary."""
+    import os
+
+    from core.engine.execution_profile_router import ExecutionProfileRouter
+    from core.engine.model_canary import run_provider_canary
+    from core.utils.config import load_config
+
+    catalogs = (load_config().get("llm", {}) or {}).get("provider_catalogs", {}) or {}
+    catalog = catalogs.get(catalog_name)
+    if not isinstance(catalog, dict):
+        available = ", ".join(sorted(catalogs)) or "<none>"
+        return f"[error] unknown provider catalog {catalog_name!r}; available: {available}"
+
+    router = ExecutionProfileRouter()
+    route = router.resolve(
+        "catalog_validator",
+        "validation",
+        explicit_profile="standard",
+        provider_catalog=catalog_name,
+    )
+    if not live:
+        return _yaml({
+            "catalog": catalog_name,
+            "provider": route.provider,
+            "model": route.model,
+            "status": "preview",
+        })
+
+    route_action_id = router.record_route_selection("mas-system", route)
+    route_selection = route.to_dict()
+    route_selection["route_action_id"] = route_action_id
+
+    def _invoke(**kwargs):
+        from core.engine.agent_runner import AgentRunner
+
+        runner = AgentRunner(
+            model=str(kwargs["model"]),
+            provider=str(kwargs["provider"]),
+            route_selection=route_selection,
+        )
+        if not runner.available:
+            raise RuntimeError("provider adapter is unavailable")
+        result = runner.run(
+            "model_canary",
+            str(kwargs["prompt"]),
+            project_id="mas-system",
+            max_tokens=int(kwargs["max_output_tokens"]),
+        )
+        if result.get("error"):
+            raise RuntimeError("provider canary failed")
+        return {
+            "reported_provider": result.get("provider"),
+            "reported_model": result.get("reported_model"),
+        }
+
+    def _audit_sink(event: dict) -> None:
+        from core.engine.event_recorder import EventRecorder
+
+        EventRecorder().record_simple(
+            project_id="mas-system",
+            actor="model_canary",
+            action_type="decision_recorded",
+            intent="Bounded provider canary completed",
+            payload=event,
+        )
+
+    return _yaml(run_provider_canary(
+        catalog_name,
+        catalog,
+        credential_lookup=lambda name: os.getenv(name) if name else None,
+        invoke=_invoke,
+        audit_sink=_audit_sink,
+        provider=route.provider,
+        model=route.model,
+        approved_candidates=route.candidates,
+    ))
+
+
+@mcp.tool()
+def mas_route_metrics(provider_catalog: str = "", profile: str = "") -> str:
+    """Return privacy-safe aggregate route telemetry for MCP clients."""
+    from core.db import aggregate_route_telemetry
+
+    if profile and profile not in {"reasoning", "standard", "economy"}:
+        return "[error] profile must be reasoning, standard, or economy"
+    return _yaml(aggregate_route_telemetry(
+        provider_catalog=provider_catalog or None,
+        profile=profile or None,
+    ))
 
 
 @mcp.tool()
@@ -161,14 +395,70 @@ def mas_snapshot(project_id: str, phase: str = "") -> str:
 
 
 @mcp.tool()
-def mas_ingest(project_id: str, response: str, agent_id: str = "") -> str:
+def mas_ingest(
+    project_id: str,
+    response: str,
+    agent_id: str = "",
+    dispatch_id: str = "",
+    reported_provider: str = "",
+    reported_model: str = "",
+    verification_source: str = "client",
+    provider_request_id: str = "",
+    input_tokens: int = -1,
+    output_tokens: int = -1,
+    cached_input_tokens: int = -1,
+    cache_creation_input_tokens: int = -1,
+    billable_input_tokens: int = -1,
+) -> str:
     """Apply an LLM response (from ANY provider) to governed state — the manual loop.
 
     Parses the wire block, records an accepted handoff, then advances/delegates/etc.
     Returns the structured outcome (phase_before/after, action, handoff_id, ...).
     """
     from core.engine.manual_loop import apply_ingest
-    res = apply_ingest(project_id, response, agent_id or None)
+    receipt = None
+    if (
+        dispatch_id
+        or reported_provider
+        or reported_model
+        or provider_request_id
+        or any(
+            value >= 0
+            for value in (
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                cache_creation_input_tokens,
+                billable_input_tokens,
+            )
+        )
+    ):
+        receipt = {
+            "dispatch_id": dispatch_id,
+            "reported_provider": reported_provider,
+            "reported_model": reported_model,
+            "provider_request_id": provider_request_id,
+            "input_tokens": input_tokens if input_tokens >= 0 else None,
+            "output_tokens": output_tokens if output_tokens >= 0 else None,
+            "cached_input_tokens": (
+                cached_input_tokens if cached_input_tokens >= 0 else None
+            ),
+            "cache_creation_input_tokens": (
+                cache_creation_input_tokens
+                if cache_creation_input_tokens >= 0
+                else None
+            ),
+            "billable_input_tokens": (
+                billable_input_tokens if billable_input_tokens >= 0 else None
+            ),
+            "verification_source": verification_source,
+        }
+    res = apply_ingest(
+        project_id,
+        response,
+        agent_id or None,
+        dispatch_receipt=receipt,
+    )
     return _yaml(dataclasses.asdict(res))
 
 
@@ -190,7 +480,7 @@ import json
 import re
 from datetime import datetime, timezone
 
-from core.config import load_config, get_projects_dir, resolve_project_dir
+from core.config import get_projects_dir, resolve_project_dir
 from core.utils.log_helpers import _get_connection, DB_PATH
 from core.utils.wire_protocol import encode as wire_encode, decode as wire_decode
 from core.engine.metrics_engine import MetricsEngine
@@ -836,12 +1126,56 @@ def mas_slo_report(project_id: str, operation: str = "", limit: int = 500) -> st
 
 @mcp.tool()
 def mas_lifecycle_check(project_id: str, phase: str) -> str:
-    """Check lifecycle artifact invariants for a project phase. Returns YAML: passed, violations."""
+    """Check lifecycle artifact invariants for a project phase. Returns YAML: passed, violations, warnings.
+
+    For phase == 'execution' this also runs the G1 task-board gate: a project may
+    not enter execution with an empty task board (blocks in standard mode, warns
+    in lite). Surfaced here so every provider surface gates on it identically.
+    """
     import yaml
-    from core.engine.lifecycle_guard import LifecycleGuard
+    from core.engine.lifecycle_guard import LifecycleGuard, check_execution_entry
     result = LifecycleGuard().check_phase_artifacts(phase, resolve_project_dir(project_id))
-    return yaml.dump({"passed": result.passed, "violations": result.violations},
+    violations = list(result.violations)
+    warnings = list(result.warnings)
+    passed = result.passed
+
+    if phase == "execution":
+        try:
+            from core.engine.task_board import TaskBoard
+            mode = (_sm(project_id).load().get("core_identity", {}) or {}).get("mode", "standard")
+            entry = check_execution_entry({"tasks": TaskBoard(project_id).list_tasks()}, mode=mode)
+            violations.extend(entry.violations)
+            warnings.extend(entry.warnings)
+            passed = passed and entry.passed
+        except Exception as exc:  # never let the gate crash the artifact check
+            warnings.append({"invariant": "execution-entry-gate",
+                             "detail": f"gate check skipped: {exc}", "severity": "warn"})
+
+    return yaml.dump({"passed": passed, "violations": violations, "warnings": warnings},
                      default_flow_style=False, allow_unicode=True)
+
+
+@mcp.tool()
+def mas_consistency_check(
+    project_id: str,
+    repair_preview: bool = False,
+) -> str:
+    """Check decision/task store consistency for a project (G3). Returns YAML: ok, findings.
+
+    Flags decisions present on disk but missing from canonical state (high; data-loss
+    risk), divergence between shared_state.execution tasks and the TaskBoard, and
+    (G4 soft gate) standard-mode completed phases with no recorded handoff (low; warn)."""
+    import yaml
+    from core.engine.consistency_check import check_project
+    report = check_project(project_id)
+    payload = {"ok": report.ok, "findings": report.findings}
+    if repair_preview:
+        payload["repair_preview"] = report.repair_preview
+    return yaml.dump(
+        payload,
+        default_flow_style=False,
+        allow_unicode=True,
+    )
 
 
 @mcp.tool()

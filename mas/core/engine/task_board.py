@@ -32,6 +32,7 @@ Usage as CLI:
 import sys
 import json
 import argparse
+import copy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -49,6 +50,149 @@ OVER_EFFORT_MULTIPLIER = 2   # flag if actual > 2x typical of effort tier
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def reconcile_plan_with_shared_state(plan: dict, state: dict) -> tuple[dict, dict]:
+    """Materialize an approved execution plan into shared state.
+
+    Existing task and milestone records win over plan defaults so live progress is
+    never reset during the pre-evaluation reconciliation.  Both the canonical
+    top-level task list and the phase-nested plan shape used by older MAS plans are
+    accepted.
+    """
+    approval = plan.get("approval_status", plan.get("status"))
+    if approval != "approved":
+        raise ValueError("execution plan must be approved before reconciliation")
+
+    raw_milestones = plan.get("milestones", []) or []
+    raw_tasks = list(plan.get("tasks", []) or [])
+    for phase in plan.get("phases", []) or []:
+        if not isinstance(phase, dict):
+            raise ValueError(f"execution plan phase is not a mapping: {phase!r}")
+        for task in phase.get("tasks", []) or []:
+            raw_tasks.append(task)
+
+    milestones: list[dict] = []
+    milestone_backref: dict[str, str] = {}
+    milestone_ids: set[str] = set()
+    for raw in raw_milestones:
+        if not isinstance(raw, dict):
+            raise ValueError(f"execution plan milestone is not a mapping: {raw!r}")
+        milestone = dict(raw)
+        milestone_id = milestone.pop("id", None) or milestone.get("milestone_id")
+        if not milestone_id:
+            raise ValueError(f"execution plan milestone missing id/milestone_id: {raw!r}")
+        if milestone_id in milestone_ids:
+            raise ValueError(f"duplicate execution plan milestone: {milestone_id}")
+        milestone_ids.add(milestone_id)
+        milestone["milestone_id"] = milestone_id
+        milestone.pop("id", None)
+        if "completion_criteria" not in milestone and "exit_criteria" in milestone:
+            milestone["completion_criteria"] = milestone.pop("exit_criteria")
+        task_ids = (
+            milestone.get("task_ids")
+            or milestone.get("tasks")
+            or milestone.get("requires")
+            or []
+        )
+        milestone["task_ids"] = list(task_ids)
+        for task_id in task_ids:
+            milestone_backref[task_id] = milestone_id
+        milestones.append(milestone)
+
+    tasks: list[dict] = []
+    task_ids: set[str] = set()
+    for raw in raw_tasks:
+        if not isinstance(raw, dict):
+            raise ValueError(f"execution plan task is not a mapping: {raw!r}")
+        task = dict(raw)
+        task_id = task.pop("id", None) or task.get("task_id")
+        if not task_id:
+            raise ValueError(f"execution plan task missing id/task_id: {raw!r}")
+        if task_id in task_ids:
+            raise ValueError(f"duplicate execution plan task: {task_id}")
+        task_ids.add(task_id)
+        task["task_id"] = task_id
+        task.pop("id", None)
+        if "description" not in task and "title" in task:
+            task["description"] = task.pop("title")
+        if "assigned_to" not in task and "owner" in task:
+            task["assigned_to"] = task.pop("owner")
+        if "dependencies" not in task and "depends_on" in task:
+            task["dependencies"] = task.pop("depends_on")
+        task.setdefault("dependencies", [])
+        task.setdefault("status", "planned")
+        task["milestone"] = task.get("milestone") or milestone_backref.get(task_id)
+        if task.get("milestone") and task["milestone"] not in milestone_ids:
+            raise ValueError(
+                f"task {task_id} references missing milestone {task['milestone']}"
+            )
+        tasks.append(task)
+
+    for milestone in milestones:
+        dangling = [task_id for task_id in milestone["task_ids"] if task_id not in task_ids]
+        if dangling:
+            raise ValueError(
+                f"milestone {milestone['milestone_id']} references missing tasks: {dangling}"
+            )
+    for task in tasks:
+        dangling = [dep for dep in task.get("dependencies", []) if dep not in task_ids]
+        if dangling:
+            raise ValueError(
+                f"task {task['task_id']} references missing dependencies: {dangling}"
+            )
+
+    reconciled = copy.deepcopy(state)
+    execution = reconciled.setdefault("execution", {})
+    existing_milestones = execution.get("milestones", []) or []
+    existing_tasks = execution.get("tasks", []) or []
+    existing_ms_by_id = {
+        item.get("milestone_id") or item.get("id"): item
+        for item in existing_milestones
+        if isinstance(item, dict) and (item.get("milestone_id") or item.get("id"))
+    }
+    existing_tasks_by_id = {
+        item.get("task_id") or item.get("id"): item
+        for item in existing_tasks
+        if isinstance(item, dict) and (item.get("task_id") or item.get("id"))
+    }
+
+    milestones_added: list[str] = []
+    reconciled_milestones: list[dict] = []
+    for milestone in milestones:
+        milestone_id = milestone["milestone_id"]
+        if milestone_id in existing_ms_by_id:
+            reconciled_milestones.append({**milestone, **existing_ms_by_id[milestone_id]})
+        else:
+            reconciled_milestones.append(milestone)
+            milestones_added.append(milestone_id)
+    # Preserve state-only milestones for forward compatibility and live recovery.
+    reconciled_milestones.extend(
+        item for key, item in existing_ms_by_id.items() if key not in milestone_ids
+    )
+
+    tasks_added: list[str] = []
+    progress_preserved: list[str] = []
+    reconciled_tasks: list[dict] = []
+    for task in tasks:
+        task_id = task["task_id"]
+        if task_id in existing_tasks_by_id:
+            reconciled_tasks.append({**task, **existing_tasks_by_id[task_id]})
+            progress_preserved.append(task_id)
+        else:
+            reconciled_tasks.append(task)
+            tasks_added.append(task_id)
+    reconciled_tasks.extend(
+        item for key, item in existing_tasks_by_id.items() if key not in task_ids
+    )
+
+    execution["milestones"] = reconciled_milestones
+    execution["tasks"] = reconciled_tasks
+    return reconciled, {
+        "milestones_added": milestones_added,
+        "tasks_added": tasks_added,
+        "progress_preserved": progress_preserved,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -79,9 +223,10 @@ class TaskBoard:
         self.execution_dir.mkdir(parents=True, exist_ok=True)
 
     def _load(self) -> dict:
-        """Load task board from disk. If absent but execution_plan.yaml exists, auto-sync."""
+        """Load task board from disk. If absent but an execution_plan.yaml exists
+        (in execution/ or the sibling planning/), auto-sync from it."""
         if not self.board_path.exists():
-            if self.plan_path.exists():
+            if self._find_plan_path() is not None:
                 self.sync_from_execution_plan()
             else:
                 return {"tasks": [], "milestones": []}
@@ -91,19 +236,89 @@ class TaskBoard:
         data.setdefault("milestones", [])
         return data
 
+    def _find_plan_path(self) -> Optional[Path]:
+        """Locate the execution plan in execution/ (preferred) or sibling planning/."""
+        if self.plan_path.exists():
+            return self.plan_path
+        alt = self.execution_dir.parent / "planning" / "execution_plan.yaml"
+        return alt if alt.exists() else None
+
+    @staticmethod
+    def _normalize_plan_milestone(m: dict) -> dict:
+        """Map the alternate (Codex) milestone schema to the canonical one.
+
+        Raises ValueError if no id can be resolved — never silently drop the key
+        (the failure that left proj-YYYYMMDD-NNN's board empty)."""
+        if not isinstance(m, dict):
+            raise ValueError(f"execution plan milestone is not a mapping: {m!r}")
+        out = dict(m)
+        if "milestone_id" not in out and "id" in out:
+            out["milestone_id"] = out.pop("id")
+        if "completion_criteria" not in out and "exit_criteria" in out:
+            out["completion_criteria"] = out.pop("exit_criteria")
+        if "task_ids" not in out and "tasks" in out:
+            out["task_ids"] = out.pop("tasks")
+        if "task_ids" not in out and "requires" in out:
+            out["task_ids"] = list(out["requires"] or [])
+        if not out.get("milestone_id"):
+            raise ValueError(f"execution plan milestone missing id/milestone_id: {m!r}")
+        out.setdefault("task_ids", [])
+        out.setdefault("status", "pending")
+        return out
+
+    @staticmethod
+    def _normalize_plan_task(t: dict, milestone_backref: dict) -> dict:
+        """Map the alternate (Codex) task schema to canonical and infer the milestone
+        backref from milestone.task_ids. Raises ValueError if no id can be resolved."""
+        if not isinstance(t, dict):
+            raise ValueError(f"execution plan task is not a mapping: {t!r}")
+        out = dict(t)
+        if "task_id" not in out and "id" in out:
+            out["task_id"] = out.pop("id")
+        if "description" not in out and "title" in out:
+            out["description"] = out.pop("title")
+        if "assigned_to" not in out and "owner" in out:
+            out["assigned_to"] = out.pop("owner")
+        if "dependencies" not in out and "depends_on" in out:
+            out["dependencies"] = out.pop("depends_on")
+        if not out.get("task_id"):
+            raise ValueError(f"execution plan task missing id/task_id: {t!r}")
+        if not out.get("milestone"):
+            out["milestone"] = milestone_backref.get(out["task_id"])
+        out.setdefault("dependencies", [])
+        out.setdefault("status", "planned")
+        return out
+
     def sync_from_execution_plan(self) -> int:
         """
-        Populate task_board.yaml from an existing execution_plan.yaml.
-        Idempotent: merges by task_id/milestone_id, skipping duplicates.
+        Populate task_board.yaml from an execution_plan.yaml found in execution/
+        (preferred) or the sibling planning/ directory.
+
+        Normalizes the alternate (Codex) plan schema (id/title/owner/depends_on/
+        exit_criteria/milestone-tasks) to the canonical board schema, and RAISES on
+        entries with no resolvable id rather than silently appending None-keyed
+        records. Idempotent: merges by milestone_id/task_id, skipping duplicates.
         Returns the number of tasks written.
         """
-        if not self.plan_path.exists():
-            raise FileNotFoundError(f"No execution_plan.yaml at {self.plan_path}")
-        with open(self.plan_path, encoding="utf-8") as f:
+        plan_path = self._find_plan_path()
+        if plan_path is None:
+            raise FileNotFoundError(
+                f"No execution_plan.yaml in {self.execution_dir} or sibling planning/"
+            )
+        with open(plan_path, encoding="utf-8") as f:
             plan = yaml.safe_load(f) or {}
 
-        milestones = plan.get("milestones", [])
-        tasks = plan.get("tasks", [])
+        milestones = [self._normalize_plan_milestone(m) for m in plan.get("milestones", [])]
+        backref: dict = {}
+        for m in milestones:
+            for tid in m.get("task_ids", []) or []:
+                backref[tid] = m["milestone_id"]
+        raw_tasks = list(plan.get("tasks", []) or [])
+        for phase in plan.get("phases", []) or []:
+            if not isinstance(phase, dict):
+                raise ValueError(f"execution plan phase is not a mapping: {phase!r}")
+            raw_tasks.extend(phase.get("tasks", []) or [])
+        tasks = [self._normalize_plan_task(t, backref) for t in raw_tasks]
 
         existing = {"tasks": [], "milestones": []}
         if self.board_path.exists():
@@ -112,16 +327,22 @@ class TaskBoard:
             existing.setdefault("tasks", [])
             existing.setdefault("milestones", [])
 
-        existing_ms_ids = {m["milestone_id"] for m in existing["milestones"]}
+        existing_ms_by_id = {m["milestone_id"]: m for m in existing["milestones"]}
+        existing_ms_ids = set(existing_ms_by_id)
         existing_task_ids = {t["task_id"] for t in existing["tasks"]}
 
         for ms in milestones:
-            if ms.get("milestone_id") not in existing_ms_ids:
+            if ms["milestone_id"] not in existing_ms_ids:
                 existing["milestones"].append(ms)
+            else:
+                current = existing_ms_by_id[ms["milestone_id"]]
+                for key, value in ms.items():
+                    if key not in current or current[key] in (None, [], ""):
+                        current[key] = value
 
         added = 0
         for task in tasks:
-            if task.get("task_id") not in existing_task_ids:
+            if task["task_id"] not in existing_task_ids:
                 existing["tasks"].append(task)
                 added += 1
 
@@ -185,6 +406,10 @@ class TaskBoard:
         data["milestones"].append(milestone)
         self._save(data)
         return ms_id
+
+    def list_milestones(self) -> list:
+        """Return all milestones (public accessor; the TaskBoard is the single source)."""
+        return self._load().get("milestones", [])
 
     def get_milestone(self, milestone_id: str) -> Optional[dict]:
         """Return a milestone by ID, or None."""

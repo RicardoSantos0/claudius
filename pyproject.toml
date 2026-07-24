@@ -3,7 +3,7 @@
 # [project.scripts]) and the import package is `core`.
 name = "claudius"
 version = "0.2.0"
-description = "claudius — a governed multi-agent delivery framework for Claude Code (CLI, reusable agents, MAS workflow skills, policies, templates)."
+description = "claudius — a provider-neutral governed multi-agent delivery framework with CLI, MCP, Codex, Claude Code, OpenCode, workflow skills, policies, and templates."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "BSD-3-Clause"
@@ -25,6 +25,9 @@ dependencies = [
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "click>=8.1",
+    # Security lower bounds for transitive HTTP/name handling packages.
+    "idna>=3.15",
+    "urllib3>=2.7.0",
 ]
 
 [project.urls]
@@ -37,10 +40,22 @@ postgres = [
     "psycopg[binary]>=3.2",
 ]
 vector = [
-    "chromadb>=0.5",
+    # Avoid ChromaDB 1.x until GHSA-f4j7-r4q5-qw2c has a fixed release.
+    "chromadb>=0.5,<1.0.0",
+    "pydantic-settings>=2.14.2",
 ]
 server = [
-    "mcp>=1.0",
+    "mcp>=1.28.1",
+]
+openai = [
+    "openai>=1.0",
+]
+litellm = [
+    "litellm>=1.0",
+]
+providers = [
+    "openai>=1.0",
+    "litellm>=1.0",
 ]
 
 [project.scripts]
