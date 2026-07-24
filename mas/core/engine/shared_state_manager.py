@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 class WriteResult:
     success: bool
     reason: str = ""
+    guidance: str = ""
 
     def __bool__(self) -> bool:
         return self.success
@@ -288,6 +289,9 @@ class SharedStateManager:
         Write a value to section.field with full governance checks.
         Returns WriteResult(success, reason).
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = f"{section}.{field}"
         state = self.load()
 
@@ -296,7 +300,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         # 2. Check immutability (set-once fields like created_at)
         if is_immutable(field_path):
@@ -305,7 +314,9 @@ class SharedStateManager:
                 reason = "field_is_immutable"
                 self._record_violation(state, agent_id, field_path, reason)
                 self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-                return WriteResult(False, reason)
+                return WriteResult(
+                    False, reason, f"{field_path} is immutable after its first value."
+                )
 
         # 3. Check immutable-after-approval
         if is_immutable_after_approval(field_path):
@@ -314,14 +325,20 @@ class SharedStateManager:
                 reason = "field_is_immutable"
                 self._record_violation(state, agent_id, field_path, reason)
                 self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-                return WriteResult(False, reason)
+                return WriteResult(
+                    False, reason, f"{field_path} is immutable after approval."
+                )
 
         # 4. Reject writes to append-only fields (must use append())
         if requires_append_only(field_path):
             reason = "field_is_append_only"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            return WriteResult(
+                False,
+                reason,
+                f"Use append() for append-only field {field_path}.",
+            )
 
         # 5. Apply write
         if section not in state:
@@ -359,6 +376,12 @@ class SharedStateManager:
             value: value to write
             mode: must be "claude_code_manual" — raises ValueError otherwise
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        synthesizing_agent = (
+            normalize_agent_id(synthesizing_agent) or synthesizing_agent
+        )
+        target_agent = normalize_agent_id(target_agent) or target_agent
         if mode != "claude_code_manual":
             return WriteResult(False, "write_as_only_permitted_in_claude_code_manual_mode")
         if synthesizing_agent != "master_orchestrator":
@@ -398,6 +421,9 @@ class SharedStateManager:
         Append an item to an append-only list field.
         Also works for fields with no mode restriction.
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = f"{section}.{field}"
         state = self.load()
 
@@ -406,7 +432,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         # 2. The field must currently be (or become) a list
         if section not in state:
@@ -518,6 +549,9 @@ class SharedStateManager:
         cannot be changed.
         Only master_orchestrator can approve fields.
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         if agent_id != "master_orchestrator":
             return WriteResult(False, "only_master_can_approve")
         field_path = f"{section}.{field}"
@@ -541,6 +575,9 @@ class SharedStateManager:
         delivery-verification status can be recorded so goal_achievement and
         acceptance_criteria_pass_rate can be scored after delivery. (prop-008-002)
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = "project_definition.acceptance_criteria"
         state = self.load()
 
@@ -548,7 +585,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         criteria = state.get("project_definition", {}).get("acceptance_criteria")
         if not isinstance(criteria, list):

@@ -59,17 +59,25 @@ def init_db(db_url: str) -> None:
                     project_id TEXT,
                     agent_id TEXT,
                     route_action_id TEXT,
+                    dispatch_id TEXT,
                     provider_catalog TEXT,
                     provider TEXT,
                     model TEXT,
+                    provider_reported_model TEXT,
+                    provider_request_id TEXT,
                     profile TEXT,
                     phase TEXT,
                     source TEXT,
+                    verification_source TEXT,
+                    stable_prefix_sha256 TEXT,
                     retry_count INTEGER NOT NULL DEFAULT 0,
                     escalated BOOLEAN NOT NULL DEFAULT FALSE,
                     latency_ms DOUBLE PRECISION,
                     input_tokens BIGINT,
                     output_tokens BIGINT,
+                    cached_input_tokens BIGINT,
+                    cache_creation_input_tokens BIGINT,
+                    billable_input_tokens BIGINT,
                     cost_usd DOUBLE PRECISION,
                     quality_score DOUBLE PRECISION,
                     success BOOLEAN NOT NULL DEFAULT FALSE,
@@ -77,6 +85,20 @@ def init_db(db_url: str) -> None:
                 )
                 """
             )
+            for name, sql_type in {
+                "dispatch_id": "TEXT",
+                "provider_reported_model": "TEXT",
+                "provider_request_id": "TEXT",
+                "verification_source": "TEXT",
+                "stable_prefix_sha256": "TEXT",
+                "cached_input_tokens": "BIGINT",
+                "cache_creation_input_tokens": "BIGINT",
+                "billable_input_tokens": "BIGINT",
+            }.items():
+                cur.execute(
+                    f"ALTER TABLE route_telemetry "
+                    f"ADD COLUMN IF NOT EXISTS {name} {sql_type}"
+                )
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_route_telemetry_catalog_profile "
                 "ON route_telemetry(provider_catalog, profile)"
@@ -84,6 +106,10 @@ def init_db(db_url: str) -> None:
             cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_route_telemetry_timestamp "
                 "ON route_telemetry(timestamp)"
+            )
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_route_telemetry_stable_prefix "
+                "ON route_telemetry(stable_prefix_sha256)"
             )
             cur.execute(
                 """
@@ -146,13 +172,13 @@ def append_event(
 
 def record_route_telemetry(db_url: str, metadata: Mapping[str, Any]) -> int:
     """Persist only the fixed route-telemetry metadata columns."""
-    from core.engine.route_telemetry import ROUTE_TELEMETRY_COLUMNS
+    from core.engine.route_telemetry import (
+        ROUTE_TELEMETRY_COLUMNS,
+        sanitize_route_metadata,
+    )
 
     init_db(db_url)
-    values = {name: metadata.get(name) for name in ROUTE_TELEMETRY_COLUMNS}
-    values["retry_count"] = max(0, int(values["retry_count"] or 0))
-    values["escalated"] = bool(values["escalated"])
-    values["success"] = bool(values["success"])
+    values = sanitize_route_metadata(metadata)
     columns = ", ".join(ROUTE_TELEMETRY_COLUMNS)
     placeholders = ", ".join("%s" for _ in ROUTE_TELEMETRY_COLUMNS)
     with connect(db_url) as conn:
@@ -175,7 +201,7 @@ def aggregate_route_telemetry(
     *,
     provider_catalog: str | None = None,
     profile: str | None = None,
-) -> dict[str, int | float | None]:
+) -> dict[str, Any]:
     """Aggregate the same privacy-safe route columns exposed by SQLite."""
     init_db(db_url)
     clauses: list[str] = []
@@ -202,13 +228,51 @@ def aggregate_route_telemetry(
                        COUNT(cost_usd) AS priced_route_count,
                        AVG(latency_ms) AS average_latency_ms,
                        AVG(quality_score) AS average_quality_score,
-                       COUNT(quality_score) AS quality_scored_count
+                       COUNT(quality_score) AS quality_scored_count,
+                       COALESCE(SUM(input_tokens), 0) AS total_input_tokens,
+                       COALESCE(SUM(output_tokens), 0) AS total_output_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN cached_input_tokens ELSE 0 END
+                       ), 0) AS cached_input_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN cache_creation_input_tokens ELSE 0 END
+                       ), 0) AS cache_creation_input_tokens,
+                       COALESCE(SUM(
+                           CASE WHEN verification_source = 'provider'
+                                THEN billable_input_tokens ELSE 0 END
+                       ), 0) AS billable_input_tokens,
+                       COUNT(CASE
+                           WHEN verification_source = 'provider'
+                            AND cached_input_tokens IS NOT NULL THEN 1 END
+                       ) AS cache_observation_count,
+                       COUNT(CASE
+                           WHEN verification_source = 'provider'
+                            AND cached_input_tokens > 0 THEN 1 END
+                       ) AS cache_hit_count,
+                       COUNT(provider_request_id) AS provider_request_count
                 FROM route_telemetry
                 {where}
                 """,
                 params,
             )
             row = cur.fetchone()
+            cur.execute(
+                f"""
+                SELECT stable_prefix_sha256, input_tokens, cached_input_tokens,
+                       cache_creation_input_tokens, billable_input_tokens
+                FROM route_telemetry
+                {where + (' AND ' if where else 'WHERE ')}
+                      verification_source = 'provider'
+                  AND stable_prefix_sha256 IS NOT NULL
+                """,
+                params,
+            )
+            cache_rows = cur.fetchall()
+    from core.engine.route_telemetry import aggregate_cache_economics
+
+    cache_observations = int(row[15])
     return {
         "route_count": int(row[0]),
         "success_count": int(row[1]),
@@ -220,6 +284,29 @@ def aggregate_route_telemetry(
         "average_latency_ms": row[7],
         "average_quality_score": row[8],
         "quality_scored_count": int(row[9]),
+        "total_input_tokens": int(row[10]),
+        "total_output_tokens": int(row[11]),
+        "cached_input_tokens": int(row[12]),
+        "cache_creation_input_tokens": int(row[13]),
+        "billable_input_tokens": int(row[14]),
+        "cache_observation_count": cache_observations,
+        "cache_hit_count": int(row[16]),
+        "cache_hit_rate": (
+            int(row[16]) / cache_observations if cache_observations else None
+        ),
+        "provider_request_count": int(row[17]),
+        "cache_by_stable_prefix": aggregate_cache_economics(
+            [
+                {
+                    "stable_prefix_sha256": cache_row[0],
+                    "input_tokens": cache_row[1],
+                    "cached_input_tokens": cache_row[2],
+                    "cache_creation_input_tokens": cache_row[3],
+                    "billable_input_tokens": cache_row[4],
+                }
+                for cache_row in cache_rows
+            ]
+        ),
     }
 
 

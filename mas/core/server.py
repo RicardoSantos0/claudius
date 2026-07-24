@@ -239,7 +239,11 @@ def mas_prompt_envelope(
             or None
         ),
     )
-    router.record_route_selection(project_id, selection)
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=assembler.last_prompt_metadata,
+    )
     try:
         from core.db import record_prompt_estimate
         record_prompt_estimate(
@@ -342,8 +346,8 @@ def mas_model_canary(catalog_name: str, live: bool = False) -> str:
         if result.get("error"):
             raise RuntimeError("provider canary failed")
         return {
+            "reported_provider": result.get("provider"),
             "reported_model": result.get("reported_model"),
-            "output": result.get("text", ""),
         }
 
     def _audit_sink(event: dict) -> None:
@@ -363,6 +367,9 @@ def mas_model_canary(catalog_name: str, live: bool = False) -> str:
         credential_lookup=lambda name: os.getenv(name) if name else None,
         invoke=_invoke,
         audit_sink=_audit_sink,
+        provider=route.provider,
+        model=route.model,
+        approved_candidates=route.candidates,
     ))
 
 
@@ -396,6 +403,12 @@ def mas_ingest(
     reported_provider: str = "",
     reported_model: str = "",
     verification_source: str = "client",
+    provider_request_id: str = "",
+    input_tokens: int = -1,
+    output_tokens: int = -1,
+    cached_input_tokens: int = -1,
+    cache_creation_input_tokens: int = -1,
+    billable_input_tokens: int = -1,
 ) -> str:
     """Apply an LLM response (from ANY provider) to governed state — the manual loop.
 
@@ -404,11 +417,40 @@ def mas_ingest(
     """
     from core.engine.manual_loop import apply_ingest
     receipt = None
-    if dispatch_id or reported_provider or reported_model:
+    if (
+        dispatch_id
+        or reported_provider
+        or reported_model
+        or provider_request_id
+        or any(
+            value >= 0
+            for value in (
+                input_tokens,
+                output_tokens,
+                cached_input_tokens,
+                cache_creation_input_tokens,
+                billable_input_tokens,
+            )
+        )
+    ):
         receipt = {
             "dispatch_id": dispatch_id,
             "reported_provider": reported_provider,
             "reported_model": reported_model,
+            "provider_request_id": provider_request_id,
+            "input_tokens": input_tokens if input_tokens >= 0 else None,
+            "output_tokens": output_tokens if output_tokens >= 0 else None,
+            "cached_input_tokens": (
+                cached_input_tokens if cached_input_tokens >= 0 else None
+            ),
+            "cache_creation_input_tokens": (
+                cache_creation_input_tokens
+                if cache_creation_input_tokens >= 0
+                else None
+            ),
+            "billable_input_tokens": (
+                billable_input_tokens if billable_input_tokens >= 0 else None
+            ),
             "verification_source": verification_source,
         }
     res = apply_ingest(
@@ -1114,7 +1156,10 @@ def mas_lifecycle_check(project_id: str, phase: str) -> str:
 
 
 @mcp.tool()
-def mas_consistency_check(project_id: str) -> str:
+def mas_consistency_check(
+    project_id: str,
+    repair_preview: bool = False,
+) -> str:
     """Check decision/task store consistency for a project (G3). Returns YAML: ok, findings.
 
     Flags decisions present on disk but missing from canonical state (high; data-loss
@@ -1123,8 +1168,14 @@ def mas_consistency_check(project_id: str) -> str:
     import yaml
     from core.engine.consistency_check import check_project
     report = check_project(project_id)
-    return yaml.dump({"ok": report.ok, "findings": report.findings},
-                     default_flow_style=False, allow_unicode=True)
+    payload = {"ok": report.ok, "findings": report.findings}
+    if repair_preview:
+        payload["repair_preview"] = report.repair_preview
+    return yaml.dump(
+        payload,
+        default_flow_style=False,
+        allow_unicode=True,
+    )
 
 
 @mcp.tool()

@@ -162,17 +162,25 @@ def init_db(db_path: Path | None = None, db_url: str | None = None) -> None:
                 project_id       TEXT,
                 agent_id         TEXT,
                 route_action_id  TEXT,
+                dispatch_id      TEXT,
                 provider_catalog TEXT,
                 provider         TEXT,
                 model            TEXT,
+                provider_reported_model TEXT,
+                provider_request_id TEXT,
                 profile          TEXT,
                 phase            TEXT,
                 source           TEXT,
+                verification_source TEXT,
+                stable_prefix_sha256 TEXT,
                 retry_count      INTEGER NOT NULL DEFAULT 0,
                 escalated        INTEGER NOT NULL DEFAULT 0,
                 latency_ms       REAL,
                 input_tokens     INTEGER,
                 output_tokens    INTEGER,
+                cached_input_tokens INTEGER,
+                cache_creation_input_tokens INTEGER,
+                billable_input_tokens INTEGER,
                 cost_usd         REAL,
                 quality_score    REAL,
                 success          INTEGER NOT NULL DEFAULT 0,
@@ -291,6 +299,27 @@ def init_db(db_path: Path | None = None, db_url: str | None = None) -> None:
                 conn.execute(f"ALTER TABLE mas_agents ADD COLUMN {col_name} {col_type}")
             except Exception:
                 pass  # column already exists
+        _ROUTE_MIGRATION_COLS = [
+            ("dispatch_id", "TEXT"),
+            ("provider_reported_model", "TEXT"),
+            ("provider_request_id", "TEXT"),
+            ("verification_source", "TEXT"),
+            ("stable_prefix_sha256", "TEXT"),
+            ("cached_input_tokens", "INTEGER"),
+            ("cache_creation_input_tokens", "INTEGER"),
+            ("billable_input_tokens", "INTEGER"),
+        ]
+        for col_name, col_type in _ROUTE_MIGRATION_COLS:
+            try:
+                conn.execute(
+                    f"ALTER TABLE route_telemetry ADD COLUMN {col_name} {col_type}"
+                )
+            except Exception:
+                pass  # column already exists
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_route_telemetry_stable_prefix "
+            "ON route_telemetry(stable_prefix_sha256)"
+        )
 
 
 def append_event(

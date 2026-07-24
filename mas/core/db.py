@@ -212,14 +212,20 @@ def query_token_usage(
                 data = _json.loads(row["payload"] or "{}")
                 # Support both flat payload (new format) and nested params.inputs (old format)
                 params = data.get("params", {}).get("inputs", data)
-                total_prompt     += params.get("tokens_prompt", 0)
-                total_completion += params.get("tokens_completion", 0)
-                total            += params.get("tokens_total", 0)
-                cached_input += params.get("cached_input_tokens", 0)
-                cache_creation_input += params.get(
-                    "cache_creation_input_tokens", 0
+                total_prompt += int(params.get("tokens_prompt", 0) or 0)
+                total_completion += int(
+                    params.get("tokens_completion", 0) or 0
                 )
-                billable_input += params.get("billable_input_tokens", 0)
+                total += int(params.get("tokens_total", 0) or 0)
+                cached_input += int(
+                    params.get("cached_input_tokens", 0) or 0
+                )
+                cache_creation_input += int(
+                    params.get("cache_creation_input_tokens", 0) or 0
+                )
+                billable_input += int(
+                    params.get("billable_input_tokens", 0) or 0
+                )
                 source = str(params.get("measurement_source") or "unspecified")
                 measurement_sources[source] = (
                     measurement_sources.get(source, 0) + 1
@@ -275,9 +281,13 @@ def record_manual_tokens(
     note: str = "",
     db_path: Path | None = None,
     measurement_source: str = "operator_reported",
-    cached_input_tokens: int = 0,
-    cache_creation_input_tokens: int = 0,
-    billable_input_tokens: int = 0,
+    cached_input_tokens: int | None = None,
+    cache_creation_input_tokens: int | None = None,
+    billable_input_tokens: int | None = None,
+    provider: str | None = None,
+    model: str | None = None,
+    provider_request_id: str | None = None,
+    stable_prefix_sha256: str | None = None,
 ) -> str:
     """Record manual-mode (Claude Code) token usage as an agent_call event.
 
@@ -287,24 +297,50 @@ def record_manual_tokens(
     metric stop treating manual-mode work as zero-cost. Returns the action_id.
     """
     tokens_total = int(tokens_prompt) + int(tokens_completion)
+    from core.engine.route_telemetry import sanitize_route_metadata
+
+    safe = sanitize_route_metadata(
+        {
+            "provider_request_id": provider_request_id,
+            "stable_prefix_sha256": stable_prefix_sha256,
+            "cached_input_tokens": cached_input_tokens,
+            "cache_creation_input_tokens": cache_creation_input_tokens,
+            "billable_input_tokens": billable_input_tokens,
+        }
+    )
+    payload = {
+        "model": model or "manual-client",
+        "provider": provider or "manual",
+        "tokens_prompt": int(tokens_prompt),
+        "tokens_completion": int(tokens_completion),
+        "tokens_total": tokens_total,
+        "source": "manual",
+        "measurement_source": measurement_source,
+        "billable_status": (
+            "provider_reported"
+            if measurement_source == "provider_reported"
+            and billable_input_tokens is not None
+            else "attested"
+            if measurement_source in {"client_attested", "operator_attested"}
+            else "unknown"
+        ),
+    }
+    for key in (
+        "cached_input_tokens",
+        "cache_creation_input_tokens",
+        "billable_input_tokens",
+        "provider_request_id",
+        "stable_prefix_sha256",
+    ):
+        if safe.get(key) is not None:
+            payload[key] = safe[key]
     return append_event(
         project_id=project_id,
         agent_id=agent_id,
         action_type="agent_call",
         intent=(note or "manual-mode token usage")[:120],
         result_shape=f"tokens={tokens_total}",
-        payload={
-            "model": "claude-code-manual",
-            "tokens_prompt": int(tokens_prompt),
-            "tokens_completion": int(tokens_completion),
-            "tokens_total": tokens_total,
-            "source": "manual",
-            "measurement_source": measurement_source,
-            "cached_input_tokens": int(cached_input_tokens),
-            "cache_creation_input_tokens": int(cache_creation_input_tokens),
-            "billable_input_tokens": int(billable_input_tokens),
-            "billable_status": "unknown",
-        },
+        payload=payload,
         db_path=_effective_db_path(db_path),
     )
 

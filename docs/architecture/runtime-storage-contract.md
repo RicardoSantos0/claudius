@@ -53,7 +53,13 @@ database file directly is not an acceptable backup procedure.
 - deterministic state-to-event reconciliation debt;
 - split-brain, ungrouped, and stub workspace layout;
 - disk/state decision consistency; and
+- incomplete decision records plus probable plan/board identifier duplicates; and
 - semantic capability drift between registry YAML and its SQLite projection.
+
+`mas consistency <project-id> --repair-preview` shows the plan and board IDs,
+descriptions, dependencies, statuses, and similarity scores for probable
+duplicates. Exact IDs remain authoritative. Ambiguous candidates are never
+merged automatically, and the preview does not write either store.
 
 Repair registry drift with the roster/capability sync tools, not by editing
 SQLite rows manually.

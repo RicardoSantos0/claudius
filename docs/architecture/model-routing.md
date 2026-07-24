@@ -64,6 +64,7 @@ date; a fixed date is supported only through injected test configuration.
 ```powershell
 mas model-catalogs
 mas model-canary --catalog openai          # preview; no provider call
+mas model-canary --all                     # preview every configured route
 mas model-canary --catalog openai --live   # explicit bounded call
 ```
 
@@ -75,7 +76,10 @@ payloads are never persisted.
 ## Manual client surfaces
 
 `mas prompt` always selects and audits a route. Plain output includes a route
-header; JSON and MCP envelopes carry structured routing metadata.
+header; JSON and MCP envelopes carry structured routing metadata. MCP clients
+should use `mas_prompt_envelope` whenever they can apply a route and return its
+receipt. The compatible `mas_prompt` is reserved for prompt-only clients where
+dispatch verification is not required.
 
 ```powershell
 mas prompt <project-id> product_manager_agent --surface claude --json
@@ -135,8 +139,10 @@ Receipt-required routes always require the selection audit to persist,
 regardless of the general setting.
 
 Live calls write only allowlisted route metadata: catalog/profile/model, phase,
-latency, retry/escalation, token counts, result, error type, and nullable
-adapter-supplied cost/quality. SQLite and PostgreSQL expose equivalent aggregates.
+latency, retry/escalation, token counts, result, error type, nullable
+adapter-supplied cost/quality, dispatch/action IDs, provider-reported model,
+bounded provider request ID, verification source, and opaque stable-prefix hash.
+SQLite and PostgreSQL expose equivalent aggregates.
 An entirely unpriced or unscored result remains `null`; `priced_route_count` and
 `quality_scored_count` expose measurement coverage.
 
@@ -144,6 +150,10 @@ An entirely unpriced or unscored result remains `null`; `priced_route_count` and
 mas route-metrics
 mas route-metrics --catalog openai --profile economy
 ```
+
+Cache-hit rates and billed-token reductions use provider-verified counters only.
+Grouping by stable-prefix hash diagnoses cache effectiveness without storing
+prompt content.
 
 MCP clients have equivalent `mas_model_catalogs`, `mas_model_canary`, and
 `mas_route_metrics` tools.

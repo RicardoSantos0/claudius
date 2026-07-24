@@ -38,6 +38,7 @@ class ParsedResponse:
     skills_used: list[dict]              # skill_used/sk_used skills agent reports having used
     raw_wire: dict                       # full decoded wire dict (pass-through unknown keys)
     parse_errors: list[str] = field(default_factory=list)
+    parse_warnings: list[str] = field(default_factory=list)
 
     @property
     def next_agents_label(self) -> str:
@@ -94,12 +95,23 @@ class ResponseParser:
 
     def parse(self, raw_text: str) -> ParsedResponse:
         errors: list[str] = []
+        warnings: list[str] = []
 
         wire = self._extract_wire_block(raw_text, errors)
         decoded = self._decode(wire, errors)
 
         status    = wire.get("s", decoded.get("status", ""))
         decisions = self._extract_decisions(wire, decoded)
+        for index, decision in enumerate(decisions, start=1):
+            label = decision.get("decision_id") or decision.get("id") or index
+            if not decision.get("rationale"):
+                warnings.append(f"decision_{label}_missing_rationale")
+            if "alternatives_considered" not in decision:
+                warnings.append(
+                    f"decision_{label}_missing_alternatives_considered"
+                )
+            if not decision.get("related_to"):
+                warnings.append(f"decision_{label}_missing_related_to")
         artifacts = self._extract_artifacts(wire, decoded)
         reasoning = wire.get("rsn", decoded.get("reasoning", ""))
 
@@ -130,6 +142,7 @@ class ResponseParser:
             skills_used=skills_used,
             raw_wire=wire,
             parse_errors=errors,
+            parse_warnings=warnings,
         )
 
     # ------------------------------------------------------------------
@@ -170,7 +183,23 @@ class ResponseParser:
     def _extract_decisions(self, wire: dict, decoded: dict) -> list[dict]:
         raw = wire.get("dec", decoded.get("decisions_made", []))
         if isinstance(raw, list):
-            return [d for d in raw if isinstance(d, dict)]
+            normalized: list[dict] = []
+            for decision in raw:
+                if not isinstance(decision, dict):
+                    continue
+                item = dict(decision)
+                if item.get("id") and not item.get("decision_id"):
+                    item["decision_id"] = item["id"]
+                if "value" not in item and "v" in item:
+                    item["value"] = item["v"]
+                if "rationale" not in item and "rat" in item:
+                    item["rationale"] = item["rat"]
+                if "alternatives_considered" not in item and "alt" in item:
+                    item["alternatives_considered"] = item["alt"]
+                if "related_to" not in item and "rel" in item:
+                    item["related_to"] = item["rel"]
+                normalized.append(item)
+            return normalized
         return []
 
     def _extract_artifacts(self, wire: dict, decoded: dict) -> list[str]:

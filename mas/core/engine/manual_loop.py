@@ -69,6 +69,7 @@ def verify_manual_dispatch(
             return []
 
     selection = None
+    selection_action_id = None
     for row in _query(
         project_id=project_id,
         agent_id=agent_id,
@@ -83,6 +84,7 @@ def verify_manual_dispatch(
             and str(candidate.get("phase") or "") == str(phase or "")
         ):
             selection = candidate
+            selection_action_id = row.get("action_id") or row.get("id")
             break
 
     if not selection:
@@ -102,6 +104,11 @@ def verify_manual_dispatch(
         "required": required,
         "selected_provider": selection.get("provider"),
         "selected_model": selection.get("model"),
+        "provider_catalog": selection.get("provider_catalog"),
+        "profile": selection.get("profile"),
+        "source": selection.get("source"),
+        "route_action_id": selection_action_id,
+        "stable_prefix_sha256": selection.get("stable_prefix_sha256"),
     }
     if not receipt:
         return {
@@ -118,6 +125,31 @@ def verify_manual_dispatch(
     )
     model = str(receipt.get("reported_model") or receipt.get("model") or "")
     source = str(receipt.get("verification_source") or "client").lower()
+    usage: dict[str, int | str] = {}
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "cache_creation_input_tokens",
+        "billable_input_tokens",
+    ):
+        value = receipt.get(key)
+        if value is None:
+            continue
+        try:
+            parsed_value = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed_value >= 0:
+            usage[key] = parsed_value
+    if receipt.get("provider_request_id"):
+        from core.engine.route_telemetry import sanitize_route_metadata
+
+        safe_request_id = sanitize_route_metadata(
+            {"provider_request_id": receipt["provider_request_id"]}
+        ).get("provider_request_id")
+        if safe_request_id:
+            usage["provider_request_id"] = safe_request_id
     if supplied_id != dispatch_id or not provider or not model:
         return {
             **base,
@@ -126,6 +158,7 @@ def verify_manual_dispatch(
             "evidence": source,
             "reported_provider": provider or None,
             "reported_model": model or None,
+            "usage": usage,
             "reason": "receipt is incomplete or dispatch_id does not match",
         }
 
@@ -142,6 +175,7 @@ def verify_manual_dispatch(
                 "evidence": source,
                 "reported_provider": provider,
                 "reported_model": model,
+                "usage": usage,
                 "reason": "dispatch receipt was already consumed",
             }
 
@@ -167,6 +201,7 @@ def verify_manual_dispatch(
             "evidence": source,
             "reported_provider": provider,
             "reported_model": model,
+            "usage": usage,
             "reason": "reported provider/model is outside approved candidates",
         }
 
@@ -182,6 +217,7 @@ def verify_manual_dispatch(
         "evidence": source if source in status_by_source else "client",
         "reported_provider": provider,
         "reported_model": model,
+        "usage": usage,
         "reason": "receipt matches an approved dispatch candidate",
     }
 
@@ -235,6 +271,10 @@ def apply_ingest(
         completion_tokens = TokenCounter().count(raw)
     except Exception:
         completion_tokens = 0
+    receipt_usage = dispatch_verification.get("usage", {}) or {}
+    prompt_tokens = int(receipt_usage.get("input_tokens", 0) or 0)
+    if "output_tokens" in receipt_usage:
+        completion_tokens = int(receipt_usage["output_tokens"])
     if parsed.next_action == "advance_phase":
         from core.engine.lifecycle_guard import (
             check_phase_transition,
@@ -287,9 +327,9 @@ def apply_ingest(
             "dispatch_verification": dispatch_verification,
         },
         token_usage={
-            "prompt_tokens": 0,
+            "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
-            "total_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
         },
     )
     hid = handoff.get("handoff_id", "")
@@ -308,15 +348,80 @@ def apply_ingest(
             payload=dispatch_verification,
         )
     try:
-        from core.db import record_manual_tokens
+        from core.db import record_manual_tokens, record_route_telemetry
+
+        verification_status = str(
+            dispatch_verification.get("status") or ""
+        )
+        measurement_source = {
+            "provider_reported": "provider_reported",
+            "client_attested": "client_attested",
+            "operator_attested": "operator_attested",
+        }.get(verification_status, "heuristic_estimate")
         record_manual_tokens(
             project_id,
             acting,
-            tokens_prompt=0,
+            tokens_prompt=prompt_tokens,
             tokens_completion=completion_tokens,
             note=f"response ingested for {acting} (manual-mode output)",
-            measurement_source="heuristic_estimate",
+            measurement_source=measurement_source,
+            cached_input_tokens=receipt_usage.get("cached_input_tokens"),
+            cache_creation_input_tokens=receipt_usage.get(
+                "cache_creation_input_tokens"
+            ),
+            billable_input_tokens=receipt_usage.get("billable_input_tokens"),
+            provider=dispatch_verification.get("reported_provider"),
+            model=dispatch_verification.get("reported_model"),
+            provider_request_id=receipt_usage.get("provider_request_id"),
+            stable_prefix_sha256=dispatch_verification.get(
+                "stable_prefix_sha256"
+            ),
         )
+        if dispatch_verification.get("accepted") and receipt_usage:
+            record_route_telemetry(
+                {
+                    "project_id": project_id,
+                    "agent_id": acting,
+                    "route_action_id": dispatch_verification.get(
+                        "route_action_id"
+                    ),
+                    "dispatch_id": dispatch_verification.get("dispatch_id"),
+                    "provider_catalog": dispatch_verification.get(
+                        "provider_catalog"
+                    ),
+                    "provider": dispatch_verification.get(
+                        "reported_provider"
+                    ),
+                    "model": dispatch_verification.get("selected_model"),
+                    "provider_reported_model": dispatch_verification.get(
+                        "reported_model"
+                    ),
+                    "provider_request_id": receipt_usage.get(
+                        "provider_request_id"
+                    ),
+                    "profile": dispatch_verification.get("profile"),
+                    "phase": phase,
+                    "source": dispatch_verification.get("source"),
+                    "verification_source": dispatch_verification.get(
+                        "evidence"
+                    ),
+                    "stable_prefix_sha256": dispatch_verification.get(
+                        "stable_prefix_sha256"
+                    ),
+                    "input_tokens": receipt_usage.get("input_tokens"),
+                    "output_tokens": receipt_usage.get("output_tokens"),
+                    "cached_input_tokens": receipt_usage.get(
+                        "cached_input_tokens"
+                    ),
+                    "cache_creation_input_tokens": receipt_usage.get(
+                        "cache_creation_input_tokens"
+                    ),
+                    "billable_input_tokens": receipt_usage.get(
+                        "billable_input_tokens"
+                    ),
+                    "success": True,
+                }
+            )
     except Exception:
         pass
 
@@ -324,8 +429,9 @@ def apply_ingest(
         phase_before=phase, phase_after=phase, acting_agent=acting,
         status=parsed.status, action=parsed.next_action, handoff_id=hid,
         next_agent=parsed.next_agent, decisions=len(parsed.decisions),
-        artifacts=len(parsed.artifacts), prompt_tokens=0,
-        completion_tokens=completion_tokens, total_tokens=completion_tokens,
+        artifacts=len(parsed.artifacts), prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
         parse_errors=list(parsed.parse_errors),
         knowledge_request=parsed.knowledge_request,
         dispatch_verification=dispatch_verification,
@@ -341,6 +447,10 @@ def apply_ingest(
             normalized["value"] = normalized["v"]
         if "rationale" not in normalized and "rat" in normalized:
             normalized["rationale"] = normalized["rat"]
+        if "alternatives_considered" not in normalized and "alt" in normalized:
+            normalized["alternatives_considered"] = normalized["alt"]
+        if "related_to" not in normalized and "rel" in normalized:
+            normalized["related_to"] = normalized["rel"]
         sm.append(
             "master_orchestrator", "decisions", "decision_log", normalized
         )

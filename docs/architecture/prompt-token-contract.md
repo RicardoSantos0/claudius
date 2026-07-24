@@ -21,6 +21,13 @@ Token payloads identify their measurement source. Provider metadata may include
 `billable_input_tokens`. Cache savings are reportable only from these observed
 provider values, never inferred from a fingerprint match.
 
+Route telemetry also binds a dispatch ID, provider-reported model, bounded
+provider request ID, verification source, and stable-prefix SHA-256. Aggregate
+cache economics accept only `verification_source=provider`; client and operator
+receipts are provenance, not proof of a provider cache hit. `mas route-metrics`
+groups verified observations by opaque stable-prefix hash and reports hit rate
+and billed-token reduction without persisting prompts or responses.
+
 ## Cache-Ready Prompt Shape
 
 `PromptAssembler.last_prompt_metadata` partitions the prompt into:
@@ -88,6 +95,8 @@ uv run mas log-tokens <project-id> <agent-id> \
   --prompt <n> --completion <n> \
   --cached-input <n> --cache-write <n> --billable-input <n>
 uv run mas doctor <project-id>
+uv run mas consistency <project-id> --repair-preview
+uv run mas route-metrics
 ```
 
 Use prompt metadata for component regressions, provider telemetry for actual

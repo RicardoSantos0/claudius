@@ -12,7 +12,7 @@ import uuid
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import date
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 from core.utils.config import load_config
 
@@ -443,7 +443,13 @@ class ExecutionProfileRouter:
             envelope["prompt_metadata"] = prompt_metadata
         return envelope
 
-    def record_route_selection(self, project_id: str, selection: RouteSelection) -> str:
+    def record_route_selection(
+        self,
+        project_id: str,
+        selection: RouteSelection,
+        *,
+        prompt_metadata: Mapping[str, Any] | None = None,
+    ) -> str:
         """Record routing provenance with the existing decision event convention."""
         if not project_id:
             return ""
@@ -452,6 +458,15 @@ class ExecutionProfileRouter:
         try:
             from core.engine.event_recorder import EventRecorder
 
+            persisted_selection = selection.to_dict()
+            stable_prefix = (
+                (prompt_metadata or {}).get("stable_prefix", {}) or {}
+            )
+            fingerprint = str(stable_prefix.get("sha256") or "").lower()
+            if len(fingerprint) == 64 and all(
+                char in "0123456789abcdef" for char in fingerprint
+            ):
+                persisted_selection["stable_prefix_sha256"] = fingerprint
             action_id = EventRecorder().record_simple(
                 project_id=project_id,
                 actor=selection.agent_id,
@@ -460,7 +475,7 @@ class ExecutionProfileRouter:
                 phase=selection.phase or None,
                 payload={
                     "decision_type": "execution_route_selection",
-                    "route_selection": selection.to_dict(),
+                    "route_selection": persisted_selection,
                 },
             )
             if action_id:

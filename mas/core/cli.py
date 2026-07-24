@@ -673,6 +673,23 @@ def _doctor_project_health(project_id: str) -> list[tuple[str, str, str]]:
                     add(sev, "consistency", f"{f['direction']} decisions {f.get('ids')}: {f['detail']}")
                 elif f.get("check") == "manual_loop_discipline":
                     add(sev, "consistency", f"phases without handoffs {f.get('phases')}: {f['detail']}")
+                elif f.get("check") == "plan_board_identifier_drift":
+                    candidate_ids = [
+                        item.get("board_id") for item in f.get("candidates", [])
+                    ]
+                    add(
+                        sev,
+                        "consistency",
+                        f"semantic {f.get('entity_type')} ID drift "
+                        f"plan={f.get('plan_id')} board={candidate_ids} "
+                        f"ambiguous={bool(f.get('ambiguous'))}: {f['detail']}",
+                    )
+                elif f.get("check") == "decision_record_quality":
+                    add(
+                        sev,
+                        "consistency",
+                        f"incomplete decision records {f.get('decisions')}: {f['detail']}",
+                    )
                 else:
                     add(sev, "consistency",
                         f"task store drift state_only={f.get('state_only')} board_only={f.get('board_only')}")
@@ -1062,7 +1079,13 @@ def resume(project_id: str, show_prompt: bool):
     click.echo(f"\nNext action: invoke {next_agent}.")
 
     if show_prompt:
-        assembled = _assemble_prompt(project_id, next_agent, state)
+        assembled_result = _assemble_prompt(
+            project_id, next_agent, state, True
+        )
+        if isinstance(assembled_result, tuple):
+            assembled, prompt_metadata = assembled_result
+        else:
+            assembled, prompt_metadata = assembled_result, {}
         from core.engine.execution_profile_router import ExecutionProfileRouter
         router = ExecutionProfileRouter()
         phase = state.get("core_identity", {}).get("current_phase", "")
@@ -1072,7 +1095,11 @@ def resume(project_id: str, show_prompt: bool):
             risk_level=state.get("project_definition", {}).get("risk_classification"),
             surface="generic",
         )
-        router.record_route_selection(project_id, selection)
+        router.record_route_selection(
+            project_id,
+            selection,
+            prompt_metadata=prompt_metadata,
+        )
         _emit_prompt(project_id, next_agent, assembled, selection)
 
 
@@ -1169,7 +1196,6 @@ def status(project_id: str):
     if calls > 0:
         click.echo(f"Agent calls      : {calls}")
     click.echo(f"Tokens (total)   : {total_tok:,}")
-
     if pending_handoffs:
         click.echo("\nPending handoffs:")
         for h in pending_handoffs:
@@ -1182,6 +1208,34 @@ def status(project_id: str):
                 f"{from_agent} → {to_agent} "
                 f"({task_description})"
             )
+
+
+# ---------------------------------------------------------------------------
+# mas consistency — read-only canonical-store and identifier-drift diagnostics
+# ---------------------------------------------------------------------------
+
+@main.command("consistency")
+@click.argument("project_id")
+@click.option(
+    "--repair-preview",
+    is_flag=True,
+    default=False,
+    help="Include explicit plan/board ID-alignment candidates; never writes.",
+)
+def consistency(project_id: str, repair_preview: bool):
+    """Check canonical stores and semantic plan/board identifier drift."""
+    _require_project(project_id)
+    from core.engine.consistency_check import check_project
+
+    report = check_project(project_id, projects_root=_get_projects_dir())
+    payload: dict[str, object] = {
+        "project_id": project_id,
+        "ok": report.ok,
+        "findings": report.findings,
+    }
+    if repair_preview:
+        payload["repair_preview"] = report.repair_preview
+    click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
 # ---------------------------------------------------------------------------
@@ -2422,88 +2476,113 @@ def model_catalogs():
 
 
 @main.command("model-canary")
-@click.option("--catalog", "catalog_name", required=True,
+@click.option("--catalog", "catalog_name", default=None,
               help="Configured provider catalog to check.")
+@click.option("--all", "all_catalogs", is_flag=True, default=False,
+              help="Preview or check every configured provider catalog.")
 @click.option("--live", is_flag=True, default=False,
               help="Execute one bounded non-governed provider request.")
-def model_canary(catalog_name: str, live: bool):
+def model_canary(catalog_name: str | None, all_catalogs: bool, live: bool):
     """Preview or run an opt-in, credentialed provider canary."""
     from core.engine.model_canary import run_provider_canary
     from core.utils.config import load_config
 
     catalogs = (load_config().get("llm", {}) or {}).get("provider_catalogs", {}) or {}
-    catalog = catalogs.get(catalog_name)
-    if not isinstance(catalog, dict):
+    if bool(catalog_name) == bool(all_catalogs):
+        raise click.ClickException("select exactly one of --catalog NAME or --all")
+    catalog_names = sorted(catalogs) if all_catalogs else [str(catalog_name)]
+    missing = [name for name in catalog_names if not isinstance(catalogs.get(name), dict)]
+    if missing:
         available = ", ".join(sorted(catalogs)) or "<none>"
         raise click.ClickException(
-            f"unknown provider catalog {catalog_name!r}; available: {available}"
+            f"unknown provider catalog {missing[0]!r}; available: {available}"
         )
 
     from core.engine.execution_profile_router import ExecutionProfileRouter
     router = ExecutionProfileRouter()
-    selection = router.resolve(
-        "catalog_validator",
-        "validation",
-        explicit_profile="standard",
-        provider_catalog=catalog_name,
-    )
+    results: list[dict] = []
+    for name in catalog_names:
+        catalog = catalogs[name]
+        selection = router.resolve(
+            "catalog_validator",
+            "validation",
+            explicit_profile="standard",
+            provider_catalog=name,
+        )
+        if not live:
+            results.append(
+                {
+                    "catalog": name,
+                    "provider": selection.provider,
+                    "model": selection.model,
+                    "approved_candidates": selection.candidates,
+                    "status": "preview",
+                }
+            )
+            continue
 
-    profiles = catalog.get("profiles", {}) or {}
-    target = profiles.get("standard") or profiles.get("economy") or profiles.get("reasoning")
-    model = target.get("model") if isinstance(target, dict) else target
+        route_action_id = router.record_route_selection("mas-system", selection)
+        route_selection = selection.to_dict()
+        route_selection["route_action_id"] = route_action_id
+
+        def _invoke(**kwargs):
+            from core.engine.agent_runner import AgentRunner
+
+            runner = AgentRunner(
+                model=str(kwargs["model"]),
+                provider=str(kwargs["provider"]),
+                route_selection=route_selection,
+            )
+            if not runner.available:
+                raise RuntimeError("provider adapter is unavailable")
+            result = runner.run(
+                "model_canary",
+                str(kwargs["prompt"]),
+                project_id="mas-system",
+                max_tokens=int(kwargs["max_output_tokens"]),
+            )
+            if result.get("error"):
+                raise RuntimeError("provider canary failed")
+            return {
+                "reported_provider": result.get("provider"),
+                "reported_model": result.get("reported_model"),
+            }
+
+        def _audit_sink(event: dict) -> None:
+            from core.engine.event_recorder import EventRecorder
+
+            EventRecorder().record_simple(
+                project_id="mas-system",
+                actor="model_canary",
+                action_type="decision_recorded",
+                intent="Bounded provider canary completed",
+                payload=event,
+            )
+
+        results.append(
+            run_provider_canary(
+                name,
+                catalog,
+                credential_lookup=lambda env_name: (
+                    os.getenv(env_name) if env_name else None
+                ),
+                invoke=_invoke,
+                audit_sink=_audit_sink,
+                provider=selection.provider,
+                model=selection.model,
+                approved_candidates=selection.candidates,
+            )
+        )
     if not live:
-        click.echo(
-            f"[preview] catalog={catalog_name} provider={catalog.get('provider')} "
-            f"model={model}; pass --live to execute the bounded canary"
-        )
+        for result in results:
+            click.echo(
+                f"[preview] catalog={result['catalog']} "
+                f"provider={result['provider']} model={result['model']}; "
+                "pass --live to execute the bounded canary"
+            )
         return
-
-    route_action_id = router.record_route_selection("mas-system", selection)
-    route_selection = selection.to_dict()
-    route_selection["route_action_id"] = route_action_id
-
-    def _invoke(**kwargs):
-        from core.engine.agent_runner import AgentRunner
-
-        runner = AgentRunner(
-            model=str(kwargs["model"]),
-            provider=str(kwargs["provider"]),
-            route_selection=route_selection,
-        )
-        if not runner.available:
-            raise RuntimeError("provider adapter is unavailable")
-        result = runner.run(
-            "model_canary",
-            str(kwargs["prompt"]),
-            project_id="mas-system",
-            max_tokens=int(kwargs["max_output_tokens"]),
-        )
-        if result.get("error"):
-            raise RuntimeError("provider canary failed")
-        return {
-            "reported_model": result.get("reported_model"),
-            "output": result.get("text", ""),
-        }
-
-    def _audit_sink(event: dict) -> None:
-        from core.engine.event_recorder import EventRecorder
-
-        EventRecorder().record_simple(
-            project_id="mas-system",
-            actor="model_canary",
-            action_type="decision_recorded",
-            intent="Bounded provider canary completed",
-            payload=event,
-        )
-
-    result = run_provider_canary(
-        catalog_name,
-        catalog,
-        credential_lookup=lambda name: os.getenv(name) if name else None,
-        invoke=_invoke,
-        audit_sink=_audit_sink,
-    )
-    click.echo(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    payload: object = results if all_catalogs else results[0]
+    click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
 @main.command("route-metrics")
@@ -2775,7 +2854,11 @@ def prompt(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    router.record_route_selection(project_id, selection)
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=prompt_metadata,
+    )
     if as_json:
         envelope = build_manual_envelope(
             project_id,
@@ -2815,6 +2898,18 @@ def prompt(
               help="Provider actually used by the manual client.")
 @click.option("--reported-model", default=None,
               help="Model actually reported/used by the manual client.")
+@click.option("--provider-request-id", default=None,
+              help="Opaque request ID returned by the provider.")
+@click.option("--input-tokens", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported input-token count.")
+@click.option("--output-tokens", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported output-token count.")
+@click.option("--cached-input", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported cached input tokens.")
+@click.option("--cache-write", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported cache-creation input tokens.")
+@click.option("--billable-input", type=click.IntRange(min=0), default=None,
+              help="Provider/client-reported billable input tokens.")
 @click.option(
     "--verification-source",
     type=click.Choice(["client", "provider", "operator"]),
@@ -2832,6 +2927,12 @@ def ingest(
     dispatch_id: str | None,
     reported_provider: str | None,
     reported_model: str | None,
+    provider_request_id: str | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cached_input: int | None,
+    cache_write: int | None,
+    billable_input: int | None,
     verification_source: str,
 ):
     """Ingest an LLM response (from ANY provider) and apply it to governed state.
@@ -2859,11 +2960,30 @@ def ingest(
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig
 
     receipt = None
-    if dispatch_id or reported_provider or reported_model:
+    if any(
+        value is not None and value != ""
+        for value in (
+            dispatch_id,
+            reported_provider,
+            reported_model,
+            provider_request_id,
+            input_tokens,
+            output_tokens,
+            cached_input,
+            cache_write,
+            billable_input,
+        )
+    ):
         receipt = {
             "dispatch_id": dispatch_id,
             "reported_provider": reported_provider,
             "reported_model": reported_model,
+            "provider_request_id": provider_request_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_input_tokens": cached_input,
+            "cache_creation_input_tokens": cache_write,
+            "billable_input_tokens": billable_input,
             "verification_source": verification_source,
         }
     try:
@@ -2896,8 +3016,18 @@ def ingest(
         f"(decisions={res.decisions} artifacts={res.artifacts})"
     )
     if res.total_tokens:
+        verification_status = str(
+            (res.dispatch_verification or {}).get("status") or ""
+        )
+        token_label = (
+            "provider-observed tokens"
+            if verification_status == "provider_reported"
+            else "attested tokens"
+            if verification_status in {"client_attested", "operator_attested"}
+            else "estimated tokens"
+        )
         click.echo(
-            f"  estimated tokens: prompt={res.prompt_tokens:,} "
+            f"  {token_label}: prompt={res.prompt_tokens:,} "
             f"completion={res.completion_tokens:,} total={res.total_tokens:,}"
         )
 
@@ -2943,11 +3073,22 @@ def ingest(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
-    router.record_route_selection(project_id, selection)
+    assembled_result = _assemble_prompt(
+        project_id, nxt, state, True
+    )
+    if isinstance(assembled_result, tuple):
+        assembled_next, prompt_metadata = assembled_result
+    else:
+        assembled_next, prompt_metadata = assembled_result, {}
+    router.record_route_selection(
+        project_id,
+        selection,
+        prompt_metadata=prompt_metadata,
+    )
     _emit_prompt(
         project_id,
         nxt,
-        _assemble_prompt(project_id, nxt, state),
+        assembled_next,
         selection,
     )
 

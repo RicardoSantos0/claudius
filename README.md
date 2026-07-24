@@ -487,6 +487,9 @@ The runtime uses a SQL event store:
 - `core.db.semantic_search(query, project_id)` — SQL-backed event search
 - `core.db.query_token_usage(project_id)` — separates observed calls from non-billable
   prompt previews and exposes provider-reported cache counters when available
+- `mas route-metrics` — groups provider-attested cache hits and billed-token
+  reductions by opaque stable-prefix hash; client/operator claims remain
+  provenance and are not counted as verified cache economics
 - `prompt_assembler` injects at most 3 deduplicated, project-relevant past events
   using the phase, target area, and project goal; generic transition noise is excluded
 - `mas sync --dry-run` reports file-to-event projection debt; deterministic event keys
@@ -528,9 +531,11 @@ Manual selection is not execution proof. Reasoning state changes require a
 matching receipt; client/operator receipts are attestations. Autonomous calls
 check provider-reported model identity against the approved candidates.
 
-Inspect catalogs with `mas model-catalogs`, preview or opt into bounded calls with
-`mas model-canary [--live]`, and inspect privacy-safe aggregates with
-`mas route-metrics`. Missing adapter-supplied cost or quality values remain
+Inspect catalogs with `mas model-catalogs`, preview one or all routes with
+`mas model-canary --catalog <name>` / `mas model-canary --all`, and inspect
+privacy-safe aggregates with `mas route-metrics`. Preview semantic identifier
+repairs with `mas consistency <project> --repair-preview`. Missing
+adapter-supplied cost or quality values remain
 unmeasured rather than being reported as zero. See
 [`docs/architecture/model-routing.md`](docs/architecture/model-routing.md).
 

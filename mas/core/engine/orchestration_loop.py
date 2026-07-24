@@ -303,6 +303,7 @@ class OrchestrationLoop:
 
         prompt = self._assembler.assemble(canonical_agent_id, state,
                                           extra_context=extra_ctx)
+        prompt_metadata = getattr(self._assembler, "last_prompt_metadata", {})
 
         route_override = self._pending_route_override(canonical_agent_id, state)
         router = ExecutionProfileRouter()
@@ -320,9 +321,18 @@ class OrchestrationLoop:
             provider_catalog=(self.config.provider_catalog
                               or route_override.get("catalog")),
         )
-        route_action_id = router.record_route_selection(self.config.project_id, selection)
+        route_action_id = router.record_route_selection(
+            self.config.project_id,
+            selection,
+            prompt_metadata=prompt_metadata,
+        )
         route_selection = selection.to_dict()
         route_selection["route_action_id"] = route_action_id
+        stable_prefix = (prompt_metadata.get("stable_prefix", {}) or {}).get(
+            "sha256"
+        )
+        if stable_prefix:
+            route_selection["stable_prefix_sha256"] = stable_prefix
 
         from core.utils.config import load_config
         max_tokens = load_config().get("llm", {}).get("max_tokens", 4096)
@@ -694,13 +704,16 @@ class OrchestrationLoop:
 
         # 1. Record decisions
         for dec in parsed.decisions:
-            if isinstance(dec, dict) and dec.get("id"):
+            decision_id = dec.get("decision_id") or dec.get("id")
+            if isinstance(dec, dict) and decision_id:
                 sm.append("master_orchestrator", "decisions", "decision_log", {
-                    "decision_id":             dec.get("id"),
-                    "value":                   dec.get("v", ""),
-                    "rationale":               dec.get("rat", ""),
-                    "alternatives_considered": dec.get("alt", []),
-                    "related_to":              dec.get("rel", ""),
+                    "decision_id":             decision_id,
+                    "value":                   dec.get("value", dec.get("v", "")),
+                    "rationale":               dec.get("rationale", dec.get("rat", "")),
+                    "alternatives_considered": dec.get(
+                        "alternatives_considered", dec.get("alt", [])
+                    ),
+                    "related_to":              dec.get("related_to", dec.get("rel", "")),
                     "recorded_at":             now,
                     "source":                  "orchestration_loop",
                 })
@@ -825,15 +838,18 @@ class OrchestrationLoop:
         self._record_skills_used(agent_id, parsed.skills_used, phase)
 
         for dec in parsed.decisions:
-            if isinstance(dec, dict) and dec.get("id"):
+            decision_id = dec.get("decision_id") or dec.get("id")
+            if isinstance(dec, dict) and decision_id:
                 try:
                     sm.append("scribe_agent", "decisions", "decision_log", {
-                        "decision_id":             dec.get("id"),
+                        "decision_id":             decision_id,
                         "decided_by":              agent_id,
-                        "value":                   dec.get("v", ""),
-                        "rationale":               dec.get("rat", ""),
-                        "alternatives_considered": dec.get("alt", []),
-                        "related_to":              dec.get("rel", ""),
+                        "value":                   dec.get("value", dec.get("v", "")),
+                        "rationale":               dec.get("rationale", dec.get("rat", "")),
+                        "alternatives_considered": dec.get(
+                            "alternatives_considered", dec.get("alt", [])
+                        ),
+                        "related_to":              dec.get("related_to", dec.get("rel", "")),
                         "recorded_at":             now,
                         "source":                  "orchestration_loop",
                     })
