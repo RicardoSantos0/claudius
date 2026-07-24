@@ -182,6 +182,30 @@ governance_policy:
     frequency_limit: "No more than 2 user_authorized_bypass decisions per quarter per project"
 
   # --- INLINE SYNTHESIS ATTRIBUTION (TP-043) ---
+  pre_evaluation_plan_reconciliation:
+    description: >
+      Before evaluation, materialize every task and milestone from the approved
+      execution plan into shared state without resetting live progress.
+    gate: "required before review advances to evaluation"
+    source: "planning/execution_plan.yaml with approval_status/status=approved"
+    behavior:
+      - "Normalize id/title aliases and phase-nested task lists"
+      - "Preserve existing task and milestone status fields"
+      - "Fail closed on unapproved plans, duplicate IDs, or dangling task, dependency, or milestone references"
+    implementation: "core.engine.task_board.reconcile_plan_with_shared_state"
+
+  default_manual_wire_envelopes:
+    description: >
+      Manual and legacy handoff payloads receive a valid v1.0 envelope before
+      persistence and communication scoring.
+    behavior:
+      - "Preserve explicit _v and s values"
+      - "Move expanded status to canonical s when s is absent"
+      - "Infer task:delegated for master-to-worker and task:complete for worker-to-master"
+      - "Retain all expanded legacy payload fields"
+    enforcement: "HandoffEngine.create"
+    governance_impact: "metric normalization only; malformed content remains non-blocking"
+
   inline_synthesis_attribution:
     description: >
       In Claude Code manual mode, master_orchestrator synthesizes consultant panels

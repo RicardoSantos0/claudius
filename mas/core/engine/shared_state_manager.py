@@ -47,9 +47,49 @@ logger = logging.getLogger(__name__)
 class WriteResult:
     success: bool
     reason: str = ""
+    guidance: str = ""
 
     def __bool__(self) -> bool:
         return self.success
+
+
+def _acceptance_label(entry: Any) -> str | None:
+    """Identity key for an acceptance criterion: its explicit id/criterion_id, or —
+    when it carries neither — the tag before the first ':' of its criterion text
+    (e.g. 'AC2b' from 'AC2b: ...'). Lets mark_acceptance_met find label-keyed criteria
+    and lets append() reject duplicate-label re-adds (proj-YYYYMMDD-NNN pf-002)."""
+    if not isinstance(entry, dict):
+        return None
+    for key in ("id", "criterion_id"):
+        value = entry.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    criterion = entry.get("criterion")
+    if isinstance(criterion, str) and criterion.strip():
+        return criterion.split(":", 1)[0].strip()
+    return None
+
+
+def _acceptance_matches(entry: Any, key: str) -> bool:
+    """True if `key` identifies this criterion by id, criterion_id, criterion label,
+    or full criterion text — so mark_acceptance_met works whether the caller passes
+    'ac-001' or 'AC1'."""
+    if not isinstance(entry, dict):
+        return False
+    if key in (entry.get("id"), entry.get("criterion_id")):
+        return True
+    criterion = entry.get("criterion")
+    if isinstance(criterion, str) and criterion.strip():
+        return key == criterion.strip() or key == criterion.split(":", 1)[0].strip()
+    return False
+
+
+# field_path -> function returning an item's identity key. append() rejects an item
+# whose key already exists in the list, so a keyed record (an acceptance criterion) is
+# updated in place rather than silently duplicated.
+_KEYED_APPEND_GUARDS: dict[str, Any] = {
+    "project_definition.acceptance_criteria": _acceptance_label,
+}
 
 
 # --- INITIAL STATE FACTORY ---
@@ -249,6 +289,9 @@ class SharedStateManager:
         Write a value to section.field with full governance checks.
         Returns WriteResult(success, reason).
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = f"{section}.{field}"
         state = self.load()
 
@@ -257,7 +300,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         # 2. Check immutability (set-once fields like created_at)
         if is_immutable(field_path):
@@ -266,7 +314,9 @@ class SharedStateManager:
                 reason = "field_is_immutable"
                 self._record_violation(state, agent_id, field_path, reason)
                 self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-                return WriteResult(False, reason)
+                return WriteResult(
+                    False, reason, f"{field_path} is immutable after its first value."
+                )
 
         # 3. Check immutable-after-approval
         if is_immutable_after_approval(field_path):
@@ -275,14 +325,20 @@ class SharedStateManager:
                 reason = "field_is_immutable"
                 self._record_violation(state, agent_id, field_path, reason)
                 self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-                return WriteResult(False, reason)
+                return WriteResult(
+                    False, reason, f"{field_path} is immutable after approval."
+                )
 
         # 4. Reject writes to append-only fields (must use append())
         if requires_append_only(field_path):
             reason = "field_is_append_only"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            return WriteResult(
+                False,
+                reason,
+                f"Use append() for append-only field {field_path}.",
+            )
 
         # 5. Apply write
         if section not in state:
@@ -320,6 +376,12 @@ class SharedStateManager:
             value: value to write
             mode: must be "claude_code_manual" — raises ValueError otherwise
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        synthesizing_agent = (
+            normalize_agent_id(synthesizing_agent) or synthesizing_agent
+        )
+        target_agent = normalize_agent_id(target_agent) or target_agent
         if mode != "claude_code_manual":
             return WriteResult(False, "write_as_only_permitted_in_claude_code_manual_mode")
         if synthesizing_agent != "master_orchestrator":
@@ -359,6 +421,9 @@ class SharedStateManager:
         Append an item to an append-only list field.
         Also works for fields with no mode restriction.
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = f"{section}.{field}"
         state = self.load()
 
@@ -367,7 +432,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         # 2. The field must currently be (or become) a list
         if section not in state:
@@ -377,6 +447,24 @@ class SharedStateManager:
             current = []
         if not isinstance(current, list):
             return WriteResult(False, "field_is_not_a_list")
+
+        # Keyed-append guard: reject re-adding a record that already exists by key
+        # (e.g. an acceptance criterion) so it is updated in place, not duplicated.
+        # A silent duplicate here skewed the acceptance_criteria_pass_rate metric to a
+        # false 7/13 (proj-YYYYMMDD-NNN pf-002).
+        key_fn = _KEYED_APPEND_GUARDS.get(field_path)
+        if key_fn is not None:
+            new_key = key_fn(item)
+            if new_key is not None and new_key in {
+                k for k in (key_fn(existing) for existing in current) if k is not None
+            }:
+                reason = (
+                    f"duplicate_keyed_append:{field_path}[{new_key}] — an entry with this "
+                    f"key already exists; update it in place (mark_acceptance_met / write) "
+                    f"instead of appending a duplicate"
+                )
+                self.logger.log_violation(agent_id, field_path, self.project_id, reason)
+                return WriteResult(False, reason)
 
         current.append(item)
         state[section][field] = current
@@ -415,17 +503,25 @@ class SharedStateManager:
         *,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        total_tokens: int = 0,
     ) -> None:
         """Add estimated token usage to communication counters.
 
         Best-effort telemetry for manual mode and provider paths where exact
         usage is unavailable. Totals are intentionally additive because a prompt
         can be assembled separately from a later response ingestion.
+
+        ``total_tokens`` (IP-3) lets callers record a usage report that only
+        carries a total (e.g. a subagent's reported ``subagent_tokens``) without
+        a prompt/completion split: it is used as the total when prompt+completion
+        sum to zero.
         """
         try:
             prompt = max(0, int(prompt_tokens or 0))
             completion = max(0, int(completion_tokens or 0))
             total = prompt + completion
+            if total <= 0:
+                total = max(0, int(total_tokens or 0))
             if total <= 0:
                 return
 
@@ -453,6 +549,9 @@ class SharedStateManager:
         cannot be changed.
         Only master_orchestrator can approve fields.
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         if agent_id != "master_orchestrator":
             return WriteResult(False, "only_master_can_approve")
         field_path = f"{section}.{field}"
@@ -476,6 +575,9 @@ class SharedStateManager:
         delivery-verification status can be recorded so goal_achievement and
         acceptance_criteria_pass_rate can be scored after delivery. (prop-008-002)
         """
+        from core.engine.agent_ids import normalize_agent_id
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
         field_path = "project_definition.acceptance_criteria"
         state = self.load()
 
@@ -483,7 +585,12 @@ class SharedStateManager:
             reason = "unauthorized_write"
             self._record_violation(state, agent_id, field_path, reason)
             self.logger.log_violation(agent_id, field_path, self.project_id, reason)
-            return WriteResult(False, reason)
+            owners = ", ".join(self.owner_of(field_path)) or "no configured owner"
+            return WriteResult(
+                False,
+                reason,
+                f"Use an authorized owner for {field_path}: {owners}.",
+            )
 
         criteria = state.get("project_definition", {}).get("acceptance_criteria")
         if not isinstance(criteria, list):
@@ -491,7 +598,7 @@ class SharedStateManager:
 
         matched = None
         for c in criteria:
-            if isinstance(c, dict) and criterion_id in (c.get("id"), c.get("criterion_id")):
+            if _acceptance_matches(c, criterion_id):
                 c["met"] = met
                 if evidence is not None:
                     c["evidence"] = evidence

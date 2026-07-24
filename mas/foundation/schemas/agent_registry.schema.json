@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://claude-config/mas/foundation/schemas/agent_registry.schema.json",
   "title": "Agent Registry",
-  "description": "Schema for mas/roster/registry_index.yaml — the canonical MAS agent registry.",
+  "description": "Schema for mas/roster/registry_canonical.yaml — the canonical MAS agent registry.",
   "type": "object",
   "required": ["agents"],
   "properties": {
@@ -11,7 +11,7 @@
       "description": "Map of MAS internal agent ID (snake_case) to agent descriptor.",
       "additionalProperties": {
         "type": "object",
-        "required": ["file", "claude_name", "trust_tier", "status", "domains", "roles"],
+        "required": ["file", "claude_name", "trust_tier", "status", "model_profile", "domains", "roles"],
         "properties": {
           "file": {
             "type": "string",
@@ -35,8 +35,13 @@
           },
           "model": {
             "type": "string",
-            "description": "Model assignment for this agent.",
+            "description": "Optional explicit legacy model override. Leave empty to inherit the provider catalog route.",
             "enum": ["opus", "sonnet", "haiku", ""]
+          },
+          "model_profile": {
+            "type": "string",
+            "description": "Provider-neutral routing profile. 'auto' selects reasoning for planning and economy for deployment/execution unless a policy overrides it.",
+            "enum": ["auto", "reasoning", "standard", "economy"]
           },
           "tools": {
             "type": "array",
@@ -78,6 +83,28 @@
             "type": "string",
             "enum": ["low", "medium", "high", "critical"],
             "description": "Risk level associated with this agent's actions."
+          },
+          "spawned": {
+            "type": "boolean",
+            "description": "Whether the agent originated through the governed spawn workflow."
+          },
+          "spawn_origin": {
+            "type": "string",
+            "description": "Project identifier that authorized the spawned agent."
+          },
+          "gap_cert": {
+            "type": "string",
+            "description": "Capability-gap certificate that justified the spawn."
+          },
+          "evaluated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Most recent formal evaluation timestamp."
+          },
+          "generalised_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Timestamp when a project-specific agent was generalized."
           }
         },
         "additionalProperties": false

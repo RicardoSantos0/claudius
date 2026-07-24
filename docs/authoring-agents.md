@@ -12,6 +12,8 @@ Agent definitions live in `agents/{name}.md` with YAML frontmatter:
 name: my-agent
 description: "One-line role description. Apply when ..."
 tools: Read, Grep, Glob, Bash, Edit
+model: inherit
+model_profile: auto
 ---
 
 # My Agent
@@ -27,7 +29,13 @@ Frontmatter rules checked by the validator:
   Tools may be a comma-separated string or a YAML list.
 - `_utilities.md` is skipped by the validator (it is not an agent).
 
-(`model` and other extra keys are allowed; they are not required by the validator.)
+Use `model: inherit` and `model_profile: auto` for provider-neutral routing. An
+explicit model is a legacy override and should be reserved for a documented,
+authorized compatibility requirement.
+Task-specific routing belongs in `llm.agent_overrides` and provider catalogs,
+not agent-file pins. Planning roles resolve to `reasoning`: Claude receives
+Fable first with approved Opus fallback, while Codex/OpenCode/local surfaces
+resolve the same semantic profile through their selected catalog.
 
 ## 2. Register the agent
 
@@ -42,7 +50,8 @@ agents:
     claude_name: my-agent        # must be lowercase-hyphenated
     trust_tier: T1
     status: active
-    model: sonnet
+    model: ""
+    model_profile: auto
     tools: [Read, Grep, Glob, Bash, Edit]
     domains: [some-domain]       # required, non-empty
     roles: [some-role]           # required, non-empty
@@ -57,7 +66,8 @@ Registry entry rules checked by the validator:
 
 - The `file` path must exist on disk.
 - `claude_name` must be present and lowercase-hyphenated (e.g. `master-orchestrator`).
-- `trust_tier`, `status`, `domains`, and `roles` must all be present and non-empty.
+- `trust_tier`, `status`, `model_profile`, `domains`, and `roles` must all be present.
+  `model_profile` should normally be `auto`; `domains` and `roles` must be non-empty.
 
 `mas/roster/registry_index.yaml` carries the MAS-engine view (agent capabilities and
 the skills registry). If you add a brand-new agent the engine should discover, add
@@ -71,10 +81,13 @@ runtime DB index so capability discovery and prompt assembly see the change:
 ```bash
 uv run python mas/tools/roster_sync.py            # apply
 uv run python mas/tools/roster_sync.py --dry-run  # preview without writing
+uv run python mas/core/engine/capability_registry.py sync-db-from-yaml
 ```
 
 This upserts the registry into the `mas_agents` table of `mas/data/episodic.db`.
-Skipping it can leave a stale agent set in runtime lookups.
+The capability sync refreshes the operational capability projection. Skipping it
+can leave a stale agent set or capability projection in runtime lookups; `mas
+doctor` reports the drift.
 
 ## 4. Validate
 

@@ -23,27 +23,27 @@ Usage as library:
     score = engine.score_goal_achievement(success_criteria, task_outcomes)
 
 Usage as CLI:
-    uv run python mas/core/engine/metrics_engine.py score-project --project-id proj-001
-    uv run python mas/core/engine/metrics_engine.py score-agent  --project-id proj-001 --agent-id hr_agent
-    uv run python mas/core/engine/metrics_engine.py report       --project-id proj-001 [--save]
+    uv run python -m core.engine.metrics_engine score-project --project-id proj-001
+    uv run python -m core.engine.metrics_engine score-agent  --project-id proj-001 --agent-id hr_agent
+    uv run python -m core.engine.metrics_engine report       --project-id proj-001 [--save]
 """
 
 import sys
 import json
 import logging
 import argparse
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 import yaml
 
+from core.paths import mas_root
 from core.utils.token_counter import TokenCounter
 
 _token_counter = TokenCounter()
 
-from core.paths import mas_root
 ROOT = mas_root()
 
 try:
@@ -566,11 +566,15 @@ class MetricsEngine:
         """For a given agent: completed / assigned * 100."""
         assigned = [t for t in all_tasks if t.get("assigned_to") == agent_id]
         if not assigned:
+            # prop-013-004: a vacuous 100 here inflated exemplary flags for every
+            # agent on boards that track work via handoffs (assigned_to: null).
             return MetricResult(
                 metric="task_completion_rate",
-                score=100.0,
+                score=-1.0,
                 evidence=f"No tasks assigned to {agent_id}",
-                findings="Agent was not assigned any tasks in this project",
+                findings="Agent was not assigned any tasks in this project — "
+                         "metric excluded from the average (score via handoff evidence instead).",
+                mode="not_applicable",
             )
 
         completed = [t for t in assigned if t.get("status") == "completed"]
@@ -653,9 +657,10 @@ class MetricsEngine:
         if not handoff_history or phase_count == 0:
             return MetricResult(
                 metric="token_efficiency",
-                score=0.0,
+                score=-1.0,
                 evidence="No handoff history or phases",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
         tokens_by_agent: dict[str, int] = {}
@@ -677,6 +682,17 @@ class MetricsEngine:
             tokens_by_agent[agent] = tokens_by_agent.get(agent, 0) + t
             tokens_by_phase[phase] = tokens_by_phase.get(phase, 0) + t
             total += t
+
+        if total == 0:
+            # prop-013-003: zero recorded tokens is a data-collection gap, not a
+            # perfect score — manual-mode projects often carry no token accounting.
+            return MetricResult(
+                metric="token_efficiency",
+                score=-1.0,
+                evidence=f"total=0, phases={phase_count}",
+                findings="No token data recorded — metric excluded from the average.",
+                mode="not_applicable",
+            )
 
         avg_per_phase = total / phase_count
         score = max(0.0, min(100.0, 100.0 - (avg_per_phase - 500) / 45.0))
@@ -703,36 +719,50 @@ class MetricsEngine:
         self,
         handoff_history: list,
     ) -> MetricResult:
-        """Ratio of structured fields to prose in payloads."""
+        """Wire-protocol compliance across all handoff payloads.
+
+        prop-013-005: the canonical definition is output_linter.check_wire_compliance
+        (presence of ``_v`` and ``s``) over every payload in the handoff history —
+        the summary-length heuristic previously used here disagreed with the
+        evaluator's manual count (3% vs 81.8% on the same project).
+        """
         if not handoff_history:
             return MetricResult(
                 metric="payload_density",
-                score=0.0,
+                score=-1.0,
                 evidence="No handoff history",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
-        structured = 0
-        prose = 0
+        from core.engine.output_linter import check_wire_compliance
 
+        compliant = 0
+        partial = 0
+        total = 0
+        acc = 0.0
         for h in handoff_history:
             payload = h.get("payload") or h.get("p") or {}
-            summary = payload.get("summary") or payload.get("s", "")
-            if isinstance(summary, str) and (len(summary) < 30 and " " not in summary.strip()):
-                structured += 1
-            else:
-                prose += 1
+            if not isinstance(payload, dict):
+                payload = {}
+            unit, _ = check_wire_compliance(payload)
+            acc += unit
+            total += 1
+            if unit >= 1.0:
+                compliant += 1
+            elif unit > 0.0:
+                partial += 1
 
-        total = structured + prose
-        rate = structured / total if total > 0 else 0.0
+        rate = acc / total if total > 0 else 0.0
         score = rate * 100.0
 
         return MetricResult(
             metric="payload_density",
             score=round(score, 1),
-            evidence=f"structured={structured}, prose={prose}, total={total}",
+            evidence=f"compliant={compliant}, partial={partial}, total={total}",
             findings=(
-                f"{rate:.0%} wire format compliance ({structured}/{total} payloads). "
+                f"{rate:.0%} wire format compliance ({compliant}/{total} fully compliant payloads; "
+                f"canonical measure: output_linter _v/s check). "
                 + ("Target: >90%." if rate < 0.9 else "Target met.")
             ),
         )
@@ -746,9 +776,10 @@ class MetricsEngine:
         if total_prompt_tokens == 0 or not prompt_token_counts:
             return MetricResult(
                 metric="context_injection_efficiency",
-                score=0.0,
+                score=-1.0,
                 evidence="No prompt token data",
-                findings="Cannot compute — no data.",
+                findings="Cannot compute — no data. Metric excluded from the average.",
+                mode="not_applicable",
             )
 
         context_tokens = sum(prompt_token_counts)
@@ -870,6 +901,7 @@ class MetricsEngine:
     def score_test_drift_detection(
         self,
         changed_files: list | None = None,
+        coverage_mappings: dict | None = None,
     ) -> MetricResult:
         """Detect implementation changes that lack paired test updates.
 
@@ -905,6 +937,12 @@ class MetricsEngine:
             return p.replace("\\", "/")
 
         files = [_norm(p) for p in files]
+        normalized_mappings: dict[str, list[str]] = {}
+        for impl, mapped_tests in (coverage_mappings or {}).items():
+            values = mapped_tests if isinstance(mapped_tests, list) else [mapped_tests]
+            normalized_mappings[_norm(str(impl))] = [
+                _norm(str(test_path)) for test_path in values if test_path
+            ]
 
         # --- classify ---
         DOC_SUFFIXES = (".md", ".rst", ".txt")
@@ -939,7 +977,12 @@ class MetricsEngine:
                 evidence=f"changed_files={len(files)}, impl_files=0",
                 findings="No implementation files changed — nothing to drift.",
                 exemplary=True,
-                breakdown={"total": len(files), "impl": 0, "tests": len(test_files)},
+                breakdown={
+                    "total": len(files),
+                    "impl": 0,
+                    "tests": len(test_files),
+                    "explicitly_mapped": [],
+                },
             )
 
         def _module_basename(p: str) -> str:
@@ -947,9 +990,18 @@ class MetricsEngine:
 
         paired_count = 0
         unpaired: list[str] = []
+        explicitly_mapped: list[str] = []
+        changed_test_files = set(test_files)
         for impl in impl_files:
             base = _module_basename(impl)
-            if any(base in t for t in test_files):
+            mapping_satisfied = any(
+                mapped_test in changed_test_files
+                for mapped_test in normalized_mappings.get(impl, [])
+            )
+            if mapping_satisfied:
+                paired_count += 1
+                explicitly_mapped.append(impl)
+            elif any(base in t for t in test_files):
                 paired_count += 1
             else:
                 unpaired.append(impl)
@@ -981,6 +1033,7 @@ class MetricsEngine:
                 "impl_files": impl_files,
                 "test_files": test_files,
                 "paired": paired_count,
+                "explicitly_mapped": explicitly_mapped,
                 "unpaired": unpaired,
             },
         )
@@ -1013,6 +1066,9 @@ class MetricsEngine:
         task_board_data: dict,
     ) -> list:
         """Compute all project-level metrics. Returns list[MetricResult]."""
+        shared_state, task_board_data, _ = _reconcile_evaluation_inputs(
+            shared_state, project_dir, task_board_data
+        )
         pd_data = shared_state.get("project_definition", {})
         wf = shared_state.get("workflow", {})
         decisions = shared_state.get("decisions", {})
@@ -1102,6 +1158,7 @@ class MetricsEngine:
             .get("test_drift_context", {}) or {}
         )
         changed_files = td_ctx.get("changed_files") or []
+        coverage_mappings = td_ctx.get("coverage_mappings") or {}
 
         metrics.extend([
             self.score_scope_adherence(planned, completed, blocked, failed, over_effort),
@@ -1110,7 +1167,7 @@ class MetricsEngine:
             self.score_decision_quality(decision_log),
             self.score_governance_compliance(governance_violations),
             self.score_record_integrity(handoff_history),
-            self.score_test_drift_detection(changed_files),
+            self.score_test_drift_detection(changed_files, coverage_mappings),
         ])
 
         return metrics
@@ -1167,6 +1224,9 @@ class MetricsEngine:
         agents_to_evaluate: list,
     ) -> "EvaluationReport":
         """Produce a full EvaluationReport."""
+        shared_state, task_board_data, _ = _reconcile_evaluation_inputs(
+            shared_state, project_dir, task_board_data
+        )
         now = datetime.now(timezone.utc).isoformat()
         seq = now.replace(":", "").replace("-", "").replace(".", "")[:14]
         report_id = f"eval-{project_id}-{seq}"
@@ -1200,6 +1260,11 @@ class MetricsEngine:
 
         comms = self.compute_communication_efficiency(shared_state)
 
+        actionable_metrics = [
+            m for m in project_metrics
+            if m.mode != "not_applicable" and m.score < 70.0
+        ]
+
         return EvaluationReport(
             report_id=report_id,
             project_id=project_id,
@@ -1215,10 +1280,10 @@ class MetricsEngine:
                 "total_violations": total_violations,
             },
             recommendations={
-                "improvement_areas": [m.metric for m in project_metrics if m.score < 70.0],
+                "improvement_areas": [m.metric for m in actionable_metrics],
                 "priority_ranking": sorted(
-                    [m.metric for m in project_metrics if m.score < 70.0],
-                    key=lambda x: next(m.score for m in project_metrics if m.metric == x),
+                    [m.metric for m in actionable_metrics],
+                    key=lambda x: next(m.score for m in actionable_metrics if m.metric == x),
                 ),
                 "suggested_actions": (
                     [f"Flag {a} for probation review" for a in probation_agents]
@@ -1236,17 +1301,47 @@ class MetricsEngine:
         (per evaluation_policy.yaml → communication_efficiency). Low scores are the
         signal that training_engine turns into communication_waste proposals."""
         wf = shared_state.get("workflow", {}) or {}
-        comm = shared_state.get("communication", {}) or {}
         consultation = shared_state.get("consultation", {}) or {}
         handoff_history = wf.get("handoff_history", []) or []
         phase_count = max(1, len(wf.get("completed_phases", []) or []))
         consultation_responses = consultation.get("consultation_responses", []) or []
         decisions_made = len((shared_state.get("decisions", {}) or {}).get("decision_log", []) or [])
+        prompt_context_counts: list[int] = []
+        total_prompt_estimates = 0
+        project_id = (
+            shared_state.get("core_identity", {}) or {}
+        ).get("project_id")
+        if project_id:
+            try:
+                from core.db import query_events
+
+                rows = query_events(
+                    project_id=project_id,
+                    action_type="prompt_estimated",
+                    limit=100,
+                )
+                for row in rows:
+                    payload = json.loads(row.get("payload") or "{}")
+                    payload = payload.get("params", {}).get("inputs", payload)
+                    components = payload.get("components", {}) or {}
+                    context_tokens = sum(
+                        int(components.get(name, 0) or 0)
+                        for name in ("state", "memory", "skills", "runtime")
+                    )
+                    total = int(payload.get("total_estimated_tokens", 0) or 0)
+                    if total > 0:
+                        prompt_context_counts.append(context_tokens)
+                        total_prompt_estimates += total
+            except Exception:
+                prompt_context_counts = []
+                total_prompt_estimates = 0
 
         metrics = [
             self.score_token_efficiency(handoff_history, phase_count),
             self.score_payload_density(handoff_history),
-            self.score_context_injection_efficiency([], comm.get("total_tokens_used", 0) or 1),
+            self.score_context_injection_efficiency(
+                prompt_context_counts, total_prompt_estimates
+            ),
             self.score_consultation_overhead(consultation_responses, decisions_made),
         ]
         applicable = [m for m in metrics if m.mode != "not_applicable"]
@@ -1329,6 +1424,51 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _reconcile_evaluation_inputs(
+    shared_state: dict,
+    project_dir: Path,
+    task_board_data: dict,
+) -> tuple[dict, dict, dict]:
+    """Reconcile an approved execution plan before any evaluation scoring."""
+    plan_path = project_dir / "planning" / "execution_plan.yaml"
+    if not plan_path.exists():
+        return shared_state, task_board_data, {
+            "milestones_added": [], "tasks_added": [], "progress_preserved": []
+        }
+    with plan_path.open(encoding="utf-8") as handle:
+        plan = yaml.safe_load(handle) or {}
+    from .task_board import reconcile_plan_with_shared_state
+
+    baseline = copy.deepcopy(shared_state)
+    execution = baseline.setdefault("execution", {})
+    for field_name, id_keys in (
+        ("milestones", ("milestone_id", "id")),
+        ("tasks", ("task_id", "id")),
+    ):
+        current = execution.get(field_name, []) or []
+        board_items = (task_board_data or {}).get(field_name, []) or []
+        by_id = {
+            next((item.get(key) for key in id_keys if item.get(key)), None): item
+            for item in current
+            if isinstance(item, dict)
+        }
+        for item in board_items:
+            if not isinstance(item, dict):
+                continue
+            item_id = next((item.get(key) for key in id_keys if item.get(key)), None)
+            if item_id:
+                by_id[item_id] = {**by_id.get(item_id, {}), **item}
+        execution[field_name] = [item for key, item in by_id.items() if key]
+
+    reconciled, report = reconcile_plan_with_shared_state(plan, baseline)
+    execution = reconciled.get("execution", {})
+    board = {
+        "tasks": execution.get("tasks", []),
+        "milestones": execution.get("milestones", []),
+    }
+    return reconciled, board, report
+
+
 def _load_project_data(project_id: str):
     """Load shared state and task board data for a project."""
     from .shared_state_manager import SharedStateManager
@@ -1344,7 +1484,15 @@ def _load_project_data(project_id: str):
     else:
         board_data = {"tasks": [], "milestones": []}
 
-    return state, project_dir, board_data
+    reconciled, board_data, report = _reconcile_evaluation_inputs(
+        state, project_dir, board_data
+    )
+    if reconciled != state:
+        # Evaluation CLI owns this lifecycle gate. Persist the atomically
+        # reconciled document rather than append partial records through ACL.
+        sm._save(reconciled)
+
+    return reconciled, project_dir, board_data
 
 
 def main_cli(args=None) -> int:

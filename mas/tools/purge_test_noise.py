@@ -2,20 +2,30 @@
 
 DRY-RUN by default (counts only). Pass --apply to delete.
 Purges test/scratch projects from agent_events, shared_states, agent_graph,
-agent_graph_edges; strips junk graph nodes. Real dated work-projects are KEPT.
+agent_graph_edges; strips junk graph nodes. Real flat and family-nested work
+projects are KEPT. Every apply creates a consistent SQLite backup first.
 
 Usage:
     python mas/tools/purge_test_noise.py            # dry-run report
     python mas/tools/purge_test_noise.py --apply    # perform deletion
 """
 import sqlite3, os, re, sys, glob
+from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DB = os.path.join(ROOT, "mas", "data", "episodic.db")
 APPLY = "--apply" in sys.argv
 
-# A project_id is KEPT iff it has a real on-disk folder OR matches the dated work pattern.
-folders = set(os.path.basename(d) for d in glob.glob(os.path.join(ROOT, "mas", "projects", "*")) if os.path.isdir(d))
+# Family-nested state can use either "proj-..." or "family/proj-..." as its
+# DB project_id, so classification uses the leaf project ID.
+folders = set(
+    os.path.basename(d)
+    for d in glob.glob(
+        os.path.join(ROOT, "mas", "projects", "**", "proj-*"),
+        recursive=True,
+    )
+    if os.path.isdir(d)
+)
 DATED = re.compile(r"^proj-2026\d{4}-\d{3}-")
 
 # Explicit test/scratch prefixes/ids that should NEVER be kept even if a folder exists.
@@ -30,16 +40,31 @@ EXPLICIT_PURGE = {"__system__", "unknown", "proj-001", "proj-002", "proj-test", 
 
 
 def classify(pid: str) -> str:
-    if pid in EXPLICIT_PURGE:
+    normalized = str(pid or "").replace("\\", "/")
+    leaf = normalized.rsplit("/", 1)[-1]
+    if normalized in EXPLICIT_PURGE or leaf in EXPLICIT_PURGE:
         return "PURGE"
     for pat in TEST_PATTERNS:
-        if pat.match(pid):
+        if pat.match(leaf):
             return "PURGE"
-    if DATED.match(pid):
+    if DATED.match(leaf):
         return "KEEP"
-    if pid in folders:
+    if leaf in folders:
         return "KEEP"
     return "PURGE"  # un-dated, no folder, not recognized → scratch
+
+
+def backup_database(con: sqlite3.Connection) -> str:
+    """Create a transactionally consistent recovery copy before deletion."""
+    backup_dir = os.path.join(ROOT, "mas", "data", "backups")
+    os.makedirs(backup_dir, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = os.path.join(
+        backup_dir, f"episodic-before-test-noise-purge-{stamp}.db"
+    )
+    with sqlite3.connect(path) as destination:
+        con.backup(destination)
+    return path
 
 
 def main():
@@ -94,6 +119,8 @@ def main():
 
     # ---- APPLY ----
     print("\nAPPLYING DELETION...")
+    backup_path = backup_database(con)
+    print(f"  backup: {backup_path}")
     if purge:
         ph = ",".join("?" * len(purge))
         cur.execute(f"DELETE FROM agent_events WHERE project_id IN ({ph})", purge)

@@ -2,6 +2,14 @@
 
 Documents the runtime gates implemented in `mas/core/engine/handoff_engine.py` and the policy hooks in `mas/policies/governance_policy.yaml`.
 
+## Default Wire Envelope Normalization
+
+Every `HandoffEngine.create()` call normalizes its payload before storage and
+scoring. Legacy expanded payloads gain `_v: "1.0"` and a direction-appropriate
+`s`; an explicit status is never overwritten. New compact records use canonical
+`p.sum` for human summary and `p.s` for status. Decoding remains compatible with
+historical `p.s` summaries and transitional `p.ws` statuses.
+
 ## Consecutive-Return-Handoff Gate (TP-milestone-c-001)
 
 ### Problem
