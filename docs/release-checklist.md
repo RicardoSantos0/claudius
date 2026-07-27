@@ -15,15 +15,20 @@ python scripts/validate_skills.py    # SKILL.md + skills registry consistency
 Both must exit `0`. If you changed agents or `registry_canonical.yaml`, run
 `uv run python mas/tools/roster_sync.py` first so the runtime DB index matches.
 
-## 2. Full test suite + coverage gate
+## 2. Fresh-install smoke suite
 
 ```bash
 pytest mas/tests/
 ```
 
-The coverage gate is **70%** (`--cov-fail-under=70` in `pyproject.toml`), staged
-toward a future 80% target. The run fails if coverage drops below 70%. CI runs the
-suite with `-x -q` (stop on first failure).
+This repo ships the fresh-install smoke suite only (`mas/tests/test_smoke.py`):
+imports, `mas doctor`, and an `init → status → prompt` round-trip. There is **no
+coverage gate** — `pyproject.toml` sets `addopts = ""` deliberately, because the
+full internal suite (unit, integration, governance, prompts) stays in the
+upstream development repo. CI runs the smoke suite with `-q` on Python 3.11,
+3.12, and 3.13, and additionally runs an installed-wheel smoke job that builds
+the wheel, asserts it bundles the framework assets, and exercises
+`init-workspace → doctor → init` from a clean venv outside the repo.
 
 ## 3. Archive cleanliness
 
@@ -81,7 +86,8 @@ Verify `agents/`, `commands/`, and `skills/` resolve under `~/.claude/`.
 ## 7. Docs current
 
 Confirm the docs under `docs/` and the top-level `README.md` still match reality:
-command names, agent count (16), skill count (11), the coverage gate (70%), and
+command names, agent count (16), skill count (11), the declared version in
+`pyproject.toml`, the shipped test policy (smoke suite, no coverage gate), and
 the current MAS discipline behavior.
 
 ## Pre-release summary
@@ -90,7 +96,7 @@ the current MAS discipline behavior.
 |-------|---------|----------------|
 | Agents | `python scripts/validate_agents.py` | exit 0 |
 | Skills | `python scripts/validate_skills.py` | exit 0 |
-| Tests + coverage | `pytest mas/tests/` | green, coverage ≥ 70% |
+| Smoke suite | `pytest mas/tests/` | green |
 | Archive | `python scripts/check_archive_clean.py <archive>` | exit 0 |
 | MAS discipline | `python scripts/check_mas_discipline.py --message-file .git/COMMIT_EDITMSG` | local project evidence present, or authorized bypass |
 | Diagnostics | `mas doctor` | healthy |

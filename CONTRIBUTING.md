@@ -1,8 +1,10 @@
 # Contributing to claudius
 
-Thanks for your interest in contributing! `claudius` is a governed multi-agent
-delivery framework for Claude Code. This guide covers how to set up, what
-standards apply, and how to get a change merged.
+Thanks for your interest in contributing! `claudius` is a provider-neutral
+governed multi-agent delivery framework, usable from Claude Code, Codex,
+OpenCode, any MCP-capable client, a manual prompt/ingest loop, or the autonomous
+`mas run` CLI. This guide covers how to set up, what standards apply, and how to
+get a change merged.
 
 ## Development setup
 
@@ -47,15 +49,18 @@ Run the same checks CI runs:
 ```bash
 python scripts/validate_agents.py     # agent frontmatter + registry coverage
 python scripts/validate_skills.py     # skill SKILL.md validity + registry consistency
-pytest mas/tests/ -q                  # full test suite (coverage gate enforced)
+pytest mas/tests/ -q                  # fresh-install smoke suite
 ```
 
 - **Agents:** every agent in `agents/` must appear in `mas/roster/registry_index.yaml`
   with the required frontmatter, and vice versa.
 - **Skills:** every shipped skill needs a valid `SKILL.md`; no registry entry may
   point to a missing folder.
-- **Tests:** add or update tests for behavior changes. Keep coverage at or above
-  the configured threshold.
+- **Tests:** this repo ships the fresh-install smoke suite
+  (`mas/tests/test_smoke.py`) — imports, `mas doctor`, and an
+  `init → status → prompt` round-trip. There is no coverage gate here; the full
+  internal suite lives in the upstream development repo. Add or update smoke
+  coverage when a change affects install, startup, or the lifecycle round-trip.
 
 ## Pull request expectations
 

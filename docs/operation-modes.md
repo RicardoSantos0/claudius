@@ -140,11 +140,13 @@ bypass record.
 ## Testing (Mode 2)
 
 ```bash
-pytest mas/tests/                 # full suite
-pytest mas/tests/unit/            # unit tests only
-pytest mas/tests/integration/     # integration tests only
-pytest mas/tests/ --cov=mas/core  # with coverage
+pytest mas/tests/                     # fresh-install smoke suite
+python scripts/validate_agents.py     # agent frontmatter + registry coverage
+python scripts/validate_skills.py     # SKILL.md validity + registry consistency
 ```
 
-The coverage gate is **70%** (`--cov-fail-under=70` in `pyproject.toml`), staged
-toward a future 80% target.
+This repo ships the fresh-install smoke suite only (`mas/tests/test_smoke.py`),
+which verifies imports, `mas doctor`, and an `init → status → prompt` round-trip.
+There is no coverage gate (`addopts = ""` in `pyproject.toml`); the full internal
+suite stays in the upstream development repo. The two validators are the same
+checks CI runs, so run them alongside the smoke suite before opening a PR.

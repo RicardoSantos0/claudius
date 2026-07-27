@@ -19,9 +19,11 @@ If taken, change `name = "claudius"` in `pyproject.toml` to an available name
 
 ## 1. Set the version
 
-`pyproject.toml` currently declares `version = "0.2.0"`. The public git tag is
-`v0.1.0` — reconcile before publishing so the tag, the wheel, and PyPI agree.
-Pick the version you want to ship, update `pyproject.toml`, and tag it (step 6).
+**Pending release action for v0.2.0.** `pyproject.toml` declares
+`version = "0.2.0"`, but the latest public git tag is still `v0.1.0` — 0.2.0 has
+been prepared but not yet tagged or published. This gap is expected until the
+release goes out; closing it is step 6 below. Reconcile before publishing so the
+tag, the wheel, and PyPI all agree on the same version.
 
 ## 2. Build
 

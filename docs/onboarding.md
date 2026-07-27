@@ -52,12 +52,15 @@ Reference: ip-001 / proj-YYYYMMDD-NNN-mas-improvements (added 2026-05-31).
 ## 4. Run the Test Suite
 
 ```bash
-pytest mas/tests/                 # full suite
-pytest mas/tests/unit/            # unit only
-pytest mas/tests/integration/     # integration only
+pytest mas/tests/                     # fresh-install smoke suite
+python scripts/validate_agents.py     # agent frontmatter + registry coverage
+python scripts/validate_skills.py     # SKILL.md validity + registry consistency
 ```
 
-The suite enforces ~70% coverage on individual runs; the full suite typically clears it.
+This repo ships the fresh-install smoke suite only (`mas/tests/test_smoke.py`) —
+imports, `mas doctor`, and an `init → status → prompt` round-trip. There is no
+coverage gate; the full internal suite stays in the upstream development repo.
+The two validators are the same checks CI runs.
 
 ## 5. Common Pitfalls
 

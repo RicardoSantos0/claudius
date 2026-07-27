@@ -7,8 +7,8 @@ minor version only.
 
 | Version | Supported |
 |---------|-----------|
-| 0.1.x   | ✅        |
-| < 0.1   | ❌        |
+| 0.2.x   | ✅        |
+| < 0.2   | ❌        |
 
 ## Reporting a vulnerability
 
@@ -45,15 +45,31 @@ excluded from version control by `.gitignore` and from source archives by
 
 ## Secret handling
 
-- Put your `ANTHROPIC_API_KEY` in `.env` (see `.env.example`). **Never commit
-  `.env`.**
+- Put the API key for whichever provider you select — for example
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or the credential your LiteLLM route
+  requires — in `.env` (see `.env.example`). **Never commit `.env`.**
+- The manual prompt/ingest and MCP workflows make no provider API calls and need
+  no credentials at all. Keys are only required for autonomous `mas run` and
+  opt-in model canaries.
 - Do not paste API keys, tokens, or credentials into agent prompts, project
   briefs, or committed files.
 - If a secret is ever committed, **rotate it immediately at the source** — git
   history makes deletion alone insufficient.
 
-## Permissions model
+## Execution and permissions model
 
-`claudius` runs agents through Claude Code with explicit allowed-tool grants per
-agent and a trust-tier model. Review `standards/security-and-permissions.md` and
-each agent's frontmatter before granting broader permissions.
+`claudius` is provider-neutral: it assembles governed prompts and records
+governed state, and the model call happens either inside the host agent surface
+(Claude Code, Codex, OpenCode, or another MCP client), in a manual paste loop, or
+— for autonomous `mas run` — through the provider adapter you configure. The
+security implications differ by surface:
+
+- **Host-surface and MCP execution.** Tool permissions are enforced by the host
+  agent surface, using each agent's declared tool grants plus the trust-tier
+  model. Review `standards/security-and-permissions.md` and each agent's
+  frontmatter before granting broader permissions.
+- **Manual paste loop.** No tools are executed by `claudius`; you decide what to
+  run from a model's reply. Treat model output as untrusted input.
+- **Autonomous `mas run`.** Prompts and responses leave your machine for the
+  selected provider. Choose the catalog accordingly, and keep project briefs free
+  of data you are not willing to send to that provider.

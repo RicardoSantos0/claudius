@@ -62,7 +62,7 @@ and [MVP limitations](#mvp-limitations).
 
 ## MVP limitations
 
-This is a first public MVP (`v0.1.0`). Known limitations, deferred to later releases:
+This is an early public release (`v0.2.0`). Known limitations, deferred to later releases:
 
 - **Single-node, file + SQLite state.** No distributed/tiered state, no multi-user
   deployment.
@@ -179,7 +179,7 @@ explicit bypass record.
 ## Directory Structure
 
 ```
-claude-config/
+claudius/
 ├── CLAUDE.md              # Agent instructions (loaded by Claude Code)
 ├── README.md              # This file
 ├── pyproject.toml         # Python package config (MAS)
@@ -257,7 +257,7 @@ claude-config/
 
 A governed multi-agent delivery framework that coordinates 16 specialized AI agents through formal handoff protocols, access-controlled shared state, and policy enforcement.
 
-**Key dependencies**: `anthropic>=0.49.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.1`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `openai`, `litellm`, `psycopg` for Postgres, and `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
+**Key dependencies**: `anthropic>=0.117.0`, `pyyaml>=6.0`, `python-dotenv>=1.0`, `click>=8.4.2`, `idna>=3.15`, `urllib3>=2.7.0` (optional extras: `openai`, `litellm`, `mcp` for the MCP server, `psycopg` for Postgres, and `chromadb>=0.5,<1.0.0` + `pydantic-settings>=2.14.2` for vector search)
 
 The vector extra deliberately avoids ChromaDB 1.x until the upstream advisory
 GHSA-f4j7-r4q5-qw2c has a fixed 1.x release. Keep vector storage disabled unless
@@ -315,7 +315,7 @@ The table below and `mas/roster/registry_index.yaml` are the canonical trust-tie
 | **T1 Consultant** | `efficiency_advisor` | Overengineering detection, cost estimation, simplification |
 | **T1** | `trainer_agent` | Improvement proposals, pattern detection (L0 advisory only) |
 | **Infrastructure** | `session_scheduler` | Scheduled session-resume, project lock management, cron-triggered checkpoint continuation |
-| **T1** | `reliability_engineer` | Test suite (70% coverage gate), golden fixtures, CI lint guards, quality gates |
+| **T1** | `reliability_engineer` | Test suite (80% coverage gate on projects it delivers), golden fixtures, CI lint guards, quality gates |
 | **T2** | `spawner_agent` | Agent design, capability packaging, draft generation |
 
 ### Project Lifecycle
