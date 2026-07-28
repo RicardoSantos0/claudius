@@ -9,6 +9,13 @@ claudius can be used three independent ways:
 - **Claude Code config mode** (Mode 1) and **source-tree MAS mode** (Mode 2), run
   from a clone and described below. Both can be active alongside a pip install.
 
+All modes share the same checked-in instructions: `AGENTS.md` at the repository
+root and `mas/AGENTS.md` in the MAS subtree. Claude Code loads those sources
+through import-only `CLAUDE.md` shims; GitHub Copilot uses `AGENTS.md` directly
+where supported and the repository bootstrap shim otherwise. Client auto-memory
+is optional and non-authoritative. `mas close` synchronizes one shared
+`PROJECT_SUMMARY.md` into the SQL event ledger for every surface.
+
 ## Mode 1 — Claude Code config mode
 
 The `agents/`, `commands/`, and `skills/` directories become globally available to

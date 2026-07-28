@@ -75,7 +75,7 @@ folder_structure:
           - final_shared_state.yaml   # Final snapshot (written at close)
           - "shared_state_snapshot_{phase}_{ts}.yaml"  # Per-phase snapshots (cleaned at close)
           - "{phase}_phase_summary.yaml"               # Optional per-phase summaries
-          - PROJECT_SUMMARY.md        # Optional human summary (reused by lineage->intake)
+          - PROJECT_SUMMARY.md        # Provider-neutral memory summary (preserved/generated at close; reused by lineage->intake)
         # Phase subdirs (created on demand by the agents working that phase):
         subdirs:
           intake:        "original_brief / brief.md, clarified_spec.yaml, clarification Q&A"

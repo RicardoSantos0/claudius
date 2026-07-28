@@ -1,0 +1,3 @@
+# The root and nested AGENTS.md files together exceed Codex's default 32 KiB
+# project-instruction budget. This keeps the complete canonical chain available.
+project_doc_max_bytes = 65536

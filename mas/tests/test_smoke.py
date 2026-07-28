@@ -3,8 +3,9 @@
 This is the ONLY test module shipped in the public `claudius` repo (the full
 internal suite stays in the private working repo). It must be self-contained:
 no fixtures from the rest of the suite, no network, no pre-existing project or
-DB state. It exercises the release-criteria CLI flow (init -> status -> prompt)
-plus package import and `mas doctor`.
+DB state. It exercises the release-criteria CLI flow
+(init -> status -> prompt -> close/memory sync) plus package import and
+`mas doctor`.
 """
 
 import pytest
@@ -104,6 +105,13 @@ def test_init_workspace_scaffolds_usable_layout(runner, tmp_path):
     assert (ws / "mas" / "system_config.yaml").exists()
     assert (ws / "agents").is_dir()
     assert (ws / "mas" / "roster").is_dir()
+    assert (ws / "AGENTS.md").is_file()
+    assert (ws / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
+    assert (ws / "mas" / "AGENTS.md").is_file()
+    assert (
+        (ws / "mas" / "CLAUDE.md").read_text(encoding="utf-8").strip()
+        == "@AGENTS.md"
+    )
     for d in ("projects", "data", "logs", "working_state"):
         assert (ws / "mas" / d).is_dir(), f"runtime dir missing: {d}"
 
@@ -137,3 +145,39 @@ def test_init_status_prompt_roundtrip(runner, tmp_path, monkeypatch):
     prompt = runner.invoke(main, ["prompt", SMOKE_ID])
     assert prompt.exit_code == 0, prompt.output
     assert prompt.output.strip()
+
+
+def test_close_syncs_provider_neutral_project_memory(runner, tmp_path, monkeypatch):
+    """Closing a project creates one summary and indexes it in the shared store."""
+    import core.engine.checkpoint_writer as checkpoint_writer
+    import core.engine.shared_state_manager as ssm
+    import core.utils.registry_seed as registry_seed
+    from core.db import semantic_search
+    from core.engine.shared_state_manager import SharedStateManager
+
+    projects_dir = tmp_path / "projects"
+    projects_dir.mkdir()
+    monkeypatch.setattr("core.config.get_projects_dir", lambda: projects_dir)
+    monkeypatch.setattr(ssm, "ROOT", tmp_path)
+    monkeypatch.setattr(checkpoint_writer, "ROOT", tmp_path)
+    monkeypatch.setattr(registry_seed, "seed", lambda *args, **kwargs: {})
+    db_path = tmp_path / "shared-memory.db"
+    monkeypatch.setenv("MAS_SQLITE_FALLBACK_URL", f"sqlite:///{db_path}")
+
+    project_id = "proj-29990101-002-memory-smoke"
+    sm = SharedStateManager(project_id)
+    sm.initialize(request_id="req-memory-smoke", mode="lite")
+    state = sm.load()
+    state["project_definition"]["project_goal"] = (
+        "Make quasarledger memory available to every provider surface."
+    )
+    sm._save(state)
+
+    result = runner.invoke(main, ["close", project_id])
+
+    assert result.exit_code == 0, result.output
+    summary_path = projects_dir / project_id / "PROJECT_SUMMARY.md"
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "quasarledger" in summary
+    hits = semantic_search("quasarledger", project_id=project_id, db_path=db_path)
+    assert any(hit["action_type"] == "project_closed" for hit in hits)

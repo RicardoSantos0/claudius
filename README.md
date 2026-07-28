@@ -15,6 +15,7 @@ and [MVP limitations](#mvp-limitations).
 ## Table of Contents
 
 - [What's included / not included](#whats-included--not-included)
+- [Shared instructions and project memory](#shared-instructions-and-project-memory)
 - [MVP limitations](#mvp-limitations)
 - [Quick Start](#quick-start)
 - [Directory Structure](#directory-structure)
@@ -59,6 +60,18 @@ and [MVP limitations](#mvp-limitations).
   internal test suite stays in the development repo.
 - No credentials. Bring the key for the provider you select (see `.env.example`);
   prompt/ingest workflows make no API calls, and live canaries are opt-in.
+
+## Shared instructions and project memory
+
+`AGENTS.md` is the single content-bearing repository instruction source for
+Codex, OpenCode, and compatible GitHub Copilot agent surfaces. Claude Code loads
+the same source through the import-only `CLAUDE.md` shim. MAS-specific guidance
+uses the same pattern under `mas/`.
+
+Provider-local memories may remain enabled as optional recall caches. Durable
+project memory is synchronized by `mas close`: it preserves or creates
+`PROJECT_SUMMARY.md` and embeds the exact same summary in the searchable
+`project_closed` SQL event, so every surface retrieves one governed history.
 
 ## MVP limitations
 
@@ -180,7 +193,8 @@ explicit bypass record.
 
 ```
 claudius/
-├── CLAUDE.md              # Agent instructions (loaded by Claude Code)
+├── AGENTS.md              # Canonical cross-provider repository instructions
+├── CLAUDE.md              # Claude Code import shim for AGENTS.md
 ├── README.md              # This file
 ├── pyproject.toml         # Python package config (MAS)
 ├── setup.ps1              # Windows symlink setup (run as Admin)
@@ -234,7 +248,8 @@ claudius/
 │   └── skill-builder/
 │
 └── mas/                   # Multi-Agent System engine
-    ├── CLAUDE.md
+    ├── AGENTS.md          # Canonical MAS-specific instructions
+    ├── CLAUDE.md          # Claude Code import shim for AGENTS.md
     ├── system_config.yaml
     ├── core/              # Python engine
     │   ├── cli.py         # CLI entry point
@@ -597,6 +612,7 @@ mas status <project-id>          # Current phase [lite], owner, pending handoffs
 mas resume <project-id>          # Resume summary + next action
 mas pending <project-id>         # Unresolved handoffs
 mas snapshot <project-id>        # Snapshot state at current phase
+mas close <project-id>           # Close and synchronize provider-neutral project memory
 mas rollup [--lineage]           # Cross-project summary; --lineage groups related families
 mas sync [--dry-run]             # Reconcile manual-mode project state into agent_events
 mas roster                       # All registered agents
@@ -632,6 +648,7 @@ python scripts/validate_skills.py     # skill SKILL.md validity + registry consi
 - [docs/architecture/model-routing.md](docs/architecture/model-routing.md) — phase-aware provider catalogs, canaries, and telemetry
 - [docs/architecture/surface-compatibility-contract.md](docs/architecture/surface-compatibility-contract.md) — shared contract for Codex, Claude Code, OpenCode, and other clients
 - [docs/architecture/runtime-storage-contract.md](docs/architecture/runtime-storage-contract.md) — runtime DB, recovery, reconciliation, and cleanup boundaries
+- [docs/architecture/source-of-truth-map.md](docs/architecture/source-of-truth-map.md) — canonical source, provider shims, runtime state, and generated projections
 - [docs/architecture/prompt-token-contract.md](docs/architecture/prompt-token-contract.md) — truthful token telemetry, cache boundaries, and accuracy-preserving startup context
 - [docs/operation-modes.md](docs/operation-modes.md) — Claude Code config mode vs source-tree MAS mode
 - [docs/governance/behavioral-discipline.md](docs/governance/behavioral-discipline.md) — MAS commit evidence for Claude Code, Codex, OpenCode, Copilot, and manual/package surfaces
