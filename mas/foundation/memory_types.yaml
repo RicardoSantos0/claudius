@@ -2,6 +2,8 @@
 # MEMORY TYPE DEFINITIONS
 # Every piece of information in the system MUST be classifiable
 # into exactly one of these three types.
+# Provider-local Claude, Codex, OpenCode, or Copilot recall is outside
+# this model and MUST NOT be used as an authoritative MAS store.
 # ============================================================
 
 memory_types:

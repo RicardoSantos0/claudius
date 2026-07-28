@@ -84,6 +84,12 @@ Each agent owns specific shared state fields. The `shared_state_manager.py` enfo
 
 Human-facing artifacts such as `CHECKPOINT.md` and `CLOSED.md` are generated summaries for operators and review, not authoritative event stores.
 
+At project close, `mas close` preserves or creates `PROJECT_SUMMARY.md` and
+embeds the same text in the `project_closed` event payload. This is the
+cross-provider memory synchronization point: every provider retrieves one
+shared summary through MAS, while provider-local memories remain optional,
+non-authoritative caches.
+
 ---
 
 ## Database Schema

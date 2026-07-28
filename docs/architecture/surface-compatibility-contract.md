@@ -19,6 +19,12 @@ New surfaces use one of two paths:
 
 No surface should add a governance fork to `mas/core`.
 
+The same rule applies to memory and instructions: all surfaces consume the
+canonical `AGENTS.md` files and governed MAS stores. Provider-local memory may
+assist recall, but it is never authoritative. `mas close` synchronizes a shared
+`PROJECT_SUMMARY.md` into the SQL event ledger; it does not write provider
+private formats as a second MAS data path.
+
 | Surface | Expected path | Compatibility rule |
 |---|---|---|
 | CLI | Direct `mas` commands | Canonical operator and scripting interface |

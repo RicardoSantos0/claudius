@@ -6,7 +6,7 @@ This guide covers what a new contributor needs to set up locally to safely modif
 
 ```bash
 git clone <repo>
-cd claude-config
+cd claudius
 # Windows
 .\setup.ps1
 # macOS / Linux
@@ -71,7 +71,7 @@ The two validators are the same checks CI runs.
 
 ## 6. Where Next
 
-- `mas/CLAUDE.md` — MAS architecture, project lifecycle, governance gates.
+- `mas/AGENTS.md` — canonical cross-provider MAS architecture, project lifecycle, and governance gates.
 - `docs/db-registry.md` — DB-backed registry tables and the seed pattern.
 - `docs/governance/behavioral-discipline.md` — commit discipline for Claude Code, Codex, OpenCode, Copilot, and package/manual surfaces.
 - `docs/governance/` — per-policy reference docs (added incrementally).

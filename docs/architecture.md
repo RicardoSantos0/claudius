@@ -13,9 +13,10 @@ Companion contracts:
 
 The repo is two cooperating layers that share one tree:
 
-1. **Claude Code config** — `agents/`, `skills/`, `commands/`. These are markdown
-   definitions symlinked into `~/.claude/` by the setup scripts, making them
-   globally available to Claude Code.
+1. **Provider surface config** — canonical `AGENTS.md` instructions plus
+   `agents/`, `skills/`, and `commands/`. Claude Code receives import shims and
+   symlinked definitions; Codex, OpenCode, and compatible Copilot agent surfaces
+   read the same `AGENTS.md` source.
 2. **MAS engine** — `mas/`. A governed Python system that coordinates 16 agents
    through formal handoffs, access-controlled shared state, and policy enforcement.
 
@@ -42,7 +43,9 @@ evaluation phase scores the project as a whole, not agents in isolation.
 ## Top-level map
 
 ```
-claude-config/
+claudius/
+├── AGENTS.md     canonical cross-provider repository instructions
+├── CLAUDE.md     Claude Code import shim
 ├── agents/        16 agent definitions (+ _utilities.md)   → ~/.claude/agents/
 ├── skills/        11 skill packages (SKILL.md each)        → ~/.claude/skills/
 ├── commands/      slash commands (resume-mas.md)           → ~/.claude/commands/
@@ -138,6 +141,8 @@ matches the ID.
 | `mas/projects/<id>/shared_state.yaml` | Compact current-state projection used for orchestration | Per project (archived at phase end) |
 | `mas/data/episodic.db` | Durable, queryable SQLite event store (handoff/runtime events, FTS5 index, registry index tables) | Durable, local fallback |
 | `mas/roster/registry_index.yaml` | Design-time source of truth for agents, capabilities, and the skills registry | Durable |
+| `mas/projects/<id>/PROJECT_SUMMARY.md` + matching `project_closed` event payload | Provider-neutral closed-project memory synchronized by `mas close` | Per project, durable |
+| `AGENTS.md`, `mas/AGENTS.md` | Canonical repository and MAS operating instructions for every provider surface | Durable source |
 
 The episodic DB also holds registry index tables (`mas_agents`, `mas_skills`, etc.)
 that index architecture artifacts. Runtime lookups query the DB registry first,

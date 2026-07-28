@@ -21,10 +21,36 @@ initialization, append, and query operations together; an explicit `db_path`
 still wins. Higher-level database helpers and `EventRecorder` must defer omitted
 paths to runtime configuration rather than re-passing the repository default.
 
+## Provider Memory Boundary
+
+MAS has no Claude memory, Codex memory, OpenCode memory, or Copilot memory.
+Provider-local auto-memory is generated client state and is never part of the
+MAS storage model.
+
+Repository instructions have one content-bearing source per scope:
+
+- `AGENTS.md` for repository-wide instructions;
+- `mas/AGENTS.md` for MAS-specific instructions.
+
+`CLAUDE.md`, `mas/CLAUDE.md`, and
+`.github/copilot-instructions.md` are discovery shims only. Provider-local
+memory may remain enabled as a non-authoritative recall cache.
+
+`mas close` is the provider-neutral synchronization boundary. It preserves an
+existing hand-authored `PROJECT_SUMMARY.md` or creates a compact one from final
+shared state, then embeds the exact same text and path in the `project_closed`
+event. Because event payloads are indexed by the shared SQL/FTS path, Claude,
+Codex, OpenCode, GitHub Copilot, and other surfaces retrieve the same closed
+project memory through MAS prompt assembly and MCP tools. MAS never writes into
+provider-private memory formats.
+
 The pytest suite uses a session-scoped temporary SQLite URL. Tests needing their
 own database override that URL or pass an explicit path. A clean suite must
 leave operator event/state counts unchanged; the cleanup tool is a detector and
 recovery path, not a substitute for isolation.
+
+Each closed project contains `PROJECT_SUMMARY.md`, preserved or generated at
+close and mirrored into the `project_closed` event for cross-provider recall.
 
 ## Deterministic Reconciliation
 

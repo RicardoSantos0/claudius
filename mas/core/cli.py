@@ -438,10 +438,12 @@ def init(name_or_id: str, request_id: str, mode: str, target_area: str | None):
 # ---------------------------------------------------------------------------
 
 # Read-only framework assets a workspace needs, grouped by their source root.
-_WORKSPACE_REPO_ITEMS = ["agents", "skills"]                  # under repo root
+_WORKSPACE_REPO_ITEMS = [
+    "agents", "skills", "AGENTS.md", "CLAUDE.md",
+]                                                              # under repo root
 _WORKSPACE_MAS_ITEMS = [
     "system_config.yaml", "policies", "templates",
-    "roster", "foundation", "domains",
+    "roster", "foundation", "domains", "AGENTS.md", "CLAUDE.md",
 ]                                                             # under mas/
 _WORKSPACE_RUNTIME_DIRS = ["projects", "data", "logs", "working_state"]  # writable, empty
 
@@ -454,9 +456,10 @@ _WORKSPACE_RUNTIME_DIRS = ["projects", "data", "logs", "working_state"]  # writa
 def init_workspace(target: str | None, force: bool):
     """Create a writable MAS workspace from the framework's bundled files.
 
-    A pip-installed wheel ships agents/skills/policies/templates/roster as
-    read-only package data. This copies them into a workspace ($MAS_HOME, default
-    ~/.mas) that mirrors the source-tree layout and creates the runtime dirs, so
+    A pip-installed wheel ships agents, skills, canonical AGENTS.md instructions,
+    Claude import shims, policies, templates, and roster data as read-only package
+    assets. This copies them into a workspace ($MAS_HOME, default ~/.mas) that
+    mirrors the source-tree layout and creates the runtime dirs, so
     `mas init/status/prompt/doctor` work outside a git clone. Safe to re-run:
     existing files are kept unless --force is given.
 
@@ -1323,10 +1326,117 @@ def snapshot(project_id: str, phase: str):
 # mas close
 # ---------------------------------------------------------------------------
 
+def _summary_entry(item, fields: tuple[str, ...]) -> str:
+    """Render one compact, searchable project-memory entry."""
+    if not isinstance(item, dict):
+        return str(item).strip()
+    if not fields:
+        return json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+    values = []
+    for field in fields:
+        value = item.get(field)
+        if value in (None, "", [], {}):
+            continue
+        if isinstance(value, (dict, list)):
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        text = " ".join(str(value).split())
+        if text and text not in values:
+            values.append(text)
+    return " — ".join(values)
+
+
+def _append_summary_section(
+    lines: list[str],
+    title: str,
+    items,
+    fields: tuple[str, ...],
+) -> None:
+    entries = [_summary_entry(item, fields) for item in (items or [])]
+    entries = [entry for entry in entries if entry]
+    lines.extend(["", f"## {title}", ""])
+    if not entries:
+        lines.append("- None recorded.")
+        return
+    lines.extend(f"- {entry}" for entry in entries)
+
+
+def _render_project_summary(state: dict, project_id: str, closed_at: str) -> str:
+    """Build the provider-neutral memory projection written by ``mas close``."""
+    identity = state.get("core_identity", {})
+    definition = state.get("project_definition", {})
+    workflow = state.get("workflow", {})
+    decisions = state.get("decisions", {})
+    artifacts = state.get("artifacts", {})
+    evaluation = state.get("evaluation", {})
+
+    goal = (
+        definition.get("project_goal")
+        or definition.get("problem_statement")
+        or definition.get("original_brief")
+        or "Not recorded."
+    )
+    goal_text = _summary_entry(goal, ())
+
+    outcome = ""
+    for phase in reversed(workflow.get("completed_phases", []) or []):
+        if isinstance(phase, dict) and phase.get("outcome"):
+            outcome = _summary_entry(phase.get("outcome"), ())
+            break
+    if not outcome:
+        outcome = "Project closed; see final_shared_state.yaml for the complete projection."
+
+    lines = [
+        "# Project Summary",
+        "",
+        f"- project_id: {project_id}",
+        f"- closed_at: {closed_at}",
+        f"- status: {identity.get('status', 'closed')}",
+        f"- mode: {workflow.get('mode', 'not recorded')}",
+        f"- target_area: {definition.get('target_area', 'not recorded')}",
+        "",
+        "## Objective",
+        "",
+        goal_text,
+        "",
+        "## Outcome",
+        "",
+        outcome,
+    ]
+
+    _append_summary_section(
+        lines,
+        "Decisions",
+        decisions.get("decision_log"),
+        ("decision_id", "description", "value", "rationale", "impact"),
+    )
+    _append_summary_section(
+        lines,
+        "Deliverables and artifacts",
+        [*(artifacts.get("deliverables") or []), *(artifacts.get("documents") or [])],
+        ("artifact_id", "name", "path", "status"),
+    )
+    _append_summary_section(
+        lines,
+        "Evaluation findings and approved improvements",
+        [
+            *(evaluation.get("quality_findings") or []),
+            *(evaluation.get("approved_updates") or []),
+        ],
+        ("finding_id", "description", "finding", "evidence", "recommendation", "status"),
+    )
+    _append_summary_section(
+        lines,
+        "Open questions",
+        decisions.get("open_questions"),
+        ("question_id", "question", "description", "resolution", "status"),
+    )
+    return "\n".join(lines).rstrip() + "\n"
+
+
 @main.command()
 @click.argument("project_id")
 def close(project_id: str):
-    """Finalize and close a project.
+    """Finalize a project and sync its provider-neutral memory summary.
 
     Example: mas close proj-YYYYMMDD-NNN-mas-run-fixes-db-consolidation
     """
@@ -1403,6 +1513,22 @@ def close(project_id: str):
         )
     click.echo(f"[ok] Closure report: {closed_path}")
 
+    # Provider-neutral memory sync: preserve a hand-authored summary when present,
+    # otherwise create a compact projection. Embedding the same content in the
+    # project_closed event makes it searchable through the shared SQL/FTS path used
+    # by Claude, Codex, OpenCode, Copilot, and every other MAS surface.
+    summary_path = sm.project_dir / "PROJECT_SUMMARY.md"
+    summary_text = ""
+    try:
+        if summary_path.exists():
+            summary_text = summary_path.read_text(encoding="utf-8")
+        else:
+            summary_text = _render_project_summary(state, project_id, closed_at)
+            summary_path.write_text(summary_text, encoding="utf-8")
+        click.echo(f"[ok] Shared memory summary: {summary_path}")
+    except Exception as exc:
+        click.echo(f"[warn] Shared memory summary sync failed: {exc}", err=True)
+
     # imp-002: surface task-board drift — warn (do not block) when tasks remain
     # in a non-terminal state at close, so evaluation metrics stay honest.
     try:
@@ -1468,6 +1594,8 @@ def close(project_id: str):
                 "closed_at": closed_at,
                 "closed_path": str(closed_path),
                 "final_state_path": str(sm.project_dir / "final_shared_state.yaml"),
+                "project_summary_path": str(summary_path),
+                "project_summary": summary_text,
             },
         )
         er.record_simple(

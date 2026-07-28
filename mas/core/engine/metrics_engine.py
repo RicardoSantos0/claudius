@@ -523,7 +523,7 @@ class MetricsEngine:
                 evidence.append(f"performance:{item}")
 
         # imp-005: acceptance criteria recorded as met *with evidence* are explicit
-        # outcome evidence. This is the documented shape (mas/CLAUDE.md):
+        # outcome evidence. This is the documented shape (mas/AGENTS.md):
         #   sm.append(..., "acceptance_criteria", {"criterion": ..., "met": True, "evidence": ...})
         # An entry without a non-empty `evidence` does NOT count (forces real evidence).
         project_definition = shared_state.get("project_definition", {})
