@@ -35,6 +35,18 @@ def _resolve_path(raw_path: str | None, *, base: Path) -> Path | None:
     return candidate
 
 
+def _normalize_sqlite_url(raw_url: str | None) -> str | None:
+    if not raw_url or not raw_url.startswith("sqlite:///"):
+        return raw_url
+    raw = raw_url.replace("sqlite:///", "", 1)
+    if raw.startswith("/"):
+        raw = raw[1:]
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = (REPO_ROOT / candidate).resolve()
+    return f"sqlite:///{candidate}"
+
+
 def get_database_backend() -> dict[str, Any]:
     cfg = load_config()
     storage = cfg.get("storage", {})
@@ -61,7 +73,7 @@ def get_database_backend() -> dict[str, Any]:
         active_url = postgres_url
     else:
         active_provider = "sqlite"
-        active_url = sqlite_url
+        active_url = _normalize_sqlite_url(sqlite_url) or sqlite_url
 
     return {
         "configured_provider": configured_provider,

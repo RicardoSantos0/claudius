@@ -15,8 +15,10 @@ from typing import Optional
 
 from core.adapters import postgres_store
 
-# Resolve DB path to <mas>/data/episodic.db in both source-tree and installed modes.
-from core.paths import mas_root
+# Resolve DB path to <repo>/mas/data/episodic.db in both source-tree and
+# installed modes. Relative SQLite URLs are anchored to the repository root so
+# they do not drift into nested paths like mas/mas/data/.
+from core.paths import mas_root, repo_root
 DEFAULT_DB_PATH = mas_root() / "data" / "episodic.db"
 DB_PATH = DEFAULT_DB_PATH
 
@@ -107,7 +109,13 @@ def _sqlite_path(db_path: Path | None, resolved_url: str | None) -> Path:
     storage config effective for event reads/writes as well as shared state.
     """
     if resolved_url and resolved_url.startswith("sqlite:///"):
-        return Path(resolved_url.replace("sqlite:///", "", 1))
+        raw = resolved_url.replace("sqlite:///", "", 1)
+        if raw.startswith("/"):
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (repo_root() / candidate).resolve()
+        return candidate
     return Path(db_path or DB_PATH)
 
 

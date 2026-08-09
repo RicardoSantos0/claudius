@@ -26,8 +26,9 @@ from datetime import datetime, timezone
 import click
 import yaml
 
-from core.paths import mas_root
+from core.paths import mas_root, repo_root
 ROOT = mas_root()
+REPO_ROOT = repo_root()
 
 # Load .env at the REPO ROOT (ROOT is mas/; the .env lives one level up) so
 # ANTHROPIC_API_KEY is available to agent_runner / `mas run`. (Previously loaded
@@ -265,9 +266,11 @@ def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None)
 
 def _resolve_sqlite_path(db_url: str) -> Path:
     raw = db_url.replace("sqlite:///", "", 1)
+    if raw.startswith("/"):
+        raw = raw[1:]
     p = Path(raw)
     if not p.is_absolute():
-        p = (ROOT.parent / p).resolve()
+        p = (REPO_ROOT / p).resolve()
     return p
 
 

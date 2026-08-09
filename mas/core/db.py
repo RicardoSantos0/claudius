@@ -81,7 +81,13 @@ def _resolved_db_url(db_path: Path | None = None) -> str:
 def _resolved_sqlite_path(db_path: Path | None = None) -> Path:
     resolved_url = _resolved_db_url(db_path)
     if resolved_url.startswith("sqlite:///"):
-        return Path(resolved_url.replace("sqlite:///", "", 1))
+        raw = resolved_url.replace("sqlite:///", "", 1)
+        if raw.startswith("/"):
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (Path(__file__).resolve().parents[2] / candidate).resolve()
+        return candidate
     effective_path = _effective_db_path(db_path)
     if effective_path is not None:
         return effective_path
