@@ -42,7 +42,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
     "master_orchestrator": ["*"],
     "scribe_agent": [
         "research-extract", "research-sync", "mas-document", "mas-handoff",
-        "writing-guidelines", "find-skills",
+        "writing-guidelines", "bencium-aeo", "find-skills",
     ],
     "inquirer_agent": [
         "research-extract", "mas-clarify", "notebooklm",
@@ -51,7 +51,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
     "product_manager_agent": [
         "research-extract", "research-sync", "mas-clarify",
         "adaptive-communication", "writing-guidelines", "human-architect-mindset",
-        "find-skills",
+        "bencium-aeo", "insurgent-campaign", "find-skills",
     ],
     # graphify = recon: navigate/query the target folder before decomposing execution.
     "project_manager_agent": [
@@ -82,6 +82,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
         "mas-examine",
         "writing-guidelines", "vanity-engineering-review",
         "design-audit", "ui-typography", "web-design-guidelines",
+        "bencium-controlled-ux-designer",
         "impeccable", "find-skills",
     ],
     "devils_advocate": [
@@ -137,7 +138,9 @@ SKILL_ACCESS: dict[str, list[str]] = {
         "webapp-delivery", "frontend-design", "impeccable",
         "deploy-to-vercel", "vercel-cli-with-tokens", "vercel-optimize",
         "vercel-composition-patterns", "vercel-react-best-practices",
-        "vercel-react-view-transitions",
+        "vercel-react-view-transitions", "vercel-react-native-skills",
+        "bencium-code-conventions", "bencium-controlled-ux-designer",
+        "bencium-impact-designer", "bencium-innovative-ux-designer",
         "find-skills",
     ],
 }

@@ -7,11 +7,20 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
+
+from core.paths import repo_root
 
 
 def _normalize_db_path(db_url: str) -> str:
     if db_url.startswith("sqlite:///"):
-        return db_url.replace("sqlite:///", "")
+        raw = db_url.replace("sqlite:///", "", 1)
+        if raw.startswith("/"):
+            raw = raw[1:]
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            candidate = (repo_root() / candidate).resolve()
+        return str(candidate)
     return db_url
 
 
