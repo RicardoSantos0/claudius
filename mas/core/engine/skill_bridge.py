@@ -91,10 +91,16 @@ SKILL_ACCESS: dict[str, list[str]] = {
     # graphify = grounded codebase/architecture comprehension for domain reasoning.
     # NotebookLM grounding for this agent stays brokered via master_orchestrator (see
     # domain_expert.md "Knowledge Retrieval"), so no direct notebooklm grant here.
+    # agentic-ux-design-relationship-centric-interfaces was granted here and removed: the
+    # registry marks it provisioning: external but it is absent from skills-lock.json, so
+    # nothing can restore it and the grant could only ever produce a denial. The registry
+    # entry is left in place — the mismatch between it and the lock file is the owner's to
+    # resolve, by adding the source to the lock or retiring the entry. Restore the grant
+    # in the same change that makes the skill restorable.
     "domain_expert": [
         "research-extract", "mas-examine", "graphify",
         "human-architect-mindset", "renaissance-architecture", "adaptive-communication",
-        "agentic-ux-design-relationship-centric-interfaces", "find-skills",
+        "find-skills",
     ],
     "efficiency_advisor": [
         "vanity-engineering-review", "negentropy-lens", "find-skills",
