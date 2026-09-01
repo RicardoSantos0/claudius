@@ -94,11 +94,32 @@ class LifecycleGuard:
         warnings.extend(trace_result.warnings)
 
         # no-close-with-open-questions
-        open_q = shared_state.get("decisions", {}).get("open_questions", [])
-        if open_q:
+        #
+        # decisions.open_questions is append-only, so a resolution is recorded as a NEW
+        # entry carrying `closes: <id>` rather than by mutating the original. Counting the
+        # list length therefore warned on every project that ever raised a question, no
+        # matter how thoroughly they were answered, which trains a reader to ignore the
+        # warning. Count only what is genuinely unresolved.
+        open_q = shared_state.get("decisions", {}).get("open_questions", []) or []
+        closed_ids = {
+            str(q.get("closes")) for q in open_q
+            if isinstance(q, dict) and q.get("closes")
+        }
+        unresolved = [
+            q for q in open_q
+            if isinstance(q, dict)
+            and str(q.get("status", "open")).lower() == "open"
+            and str(q.get("id", "")) not in closed_ids
+        ]
+        # A non-dict entry is a bare question string with no way to record a resolution,
+        # so it counts as unresolved.
+        unresolved += [q for q in open_q if not isinstance(q, dict)]
+        if unresolved:
+            ids = ", ".join(str(q.get("id", "?")) for q in unresolved if isinstance(q, dict))
             warnings.append({
                 "invariant": "no-close-with-open-questions",
-                "detail": f"{len(open_q)} open question(s)",
+                "detail": (f"{len(unresolved)} unresolved question(s) of {len(open_q)} "
+                           f"recorded entries" + (f": {ids}" if ids else "")),
                 "severity": "warn",
             })
 
@@ -138,20 +159,28 @@ def _project_mode(shared_state: dict) -> str:
 
 
 def _handoff_status(handoff: dict) -> str:
+    """Read acceptance from either handoff schema.
+
+    handoff_history holds two shapes, because HandoffEngine writes a compact wire format
+    to save tokens (`acc`/`ph`/`from`/`to`, see HandoffEngine._COMPACT_MAP) while other
+    writers store the expanded keys. This read only the expanded ones, so a compact entry
+    always looked unaccepted and a project with a genuine accepted intake handoff was
+    blocked from closing.
+    """
     acceptance = handoff.get("acceptance", {})
     if isinstance(acceptance, dict) and acceptance.get("status"):
         return str(acceptance["status"])
-    return str(handoff.get("status", ""))
+    return str(handoff.get("status") or handoff.get("acc") or "")
 
 
 def _is_accepted_inquirer_intake_handoff(handoff: dict) -> bool:
     if _handoff_status(handoff) != "accepted":
         return False
-    if handoff.get("phase") != "intake":
+    if (handoff.get("phase") or handoff.get("ph")) != "intake":
         return False
     return "inquirer_agent" in {
-        str(handoff.get("from_agent", "")),
-        str(handoff.get("to_agent", "")),
+        str(handoff.get("from_agent") or handoff.get("from") or ""),
+        str(handoff.get("to_agent") or handoff.get("to") or ""),
     }
 
 
