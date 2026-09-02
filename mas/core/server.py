@@ -17,9 +17,17 @@ from __future__ import annotations
 
 import dataclasses
 
-from mcp.server.fastmcp import FastMCP
+# mcp 2.0 removed mcp.server.fastmcp and renamed FastMCP to MCPServer. Both names are
+# accepted because this file is synced to the public claudius mirror, which declares a
+# floor of mcp>=1.28.1 while this repo declares mcp>=2.0.0. The API this module uses is
+# identical across the rename: .tool() returns the function untouched, so every tool
+# below stays directly callable, and .run() still defaults to the stdio transport.
+try:
+    from mcp.server.mcpserver import MCPServer  # mcp >= 2.0
+except ImportError:  # pragma: no cover - exercised only on mcp 1.x
+    from mcp.server.fastmcp import FastMCP as MCPServer
 
-mcp = FastMCP("mas-server", instructions=(
+mcp = MCPServer("mas-server", instructions=(
     "MAS (Multi-Agent System) engine over MCP. Inspect and drive governed project "
     "state, assemble the next agent prompt, and apply an LLM response from any "
     "provider (the provider-agnostic manual loop)."
