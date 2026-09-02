@@ -42,7 +42,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
     "master_orchestrator": ["*"],
     "scribe_agent": [
         "research-extract", "research-sync", "mas-document", "mas-handoff",
-        "writing-guidelines", "bencium-aeo", "find-skills",
+        "writing-guidelines", "prose-craft", "bencium-aeo", "find-skills",
     ],
     "inquirer_agent": [
         "research-extract", "mas-clarify", "notebooklm",
@@ -50,7 +50,8 @@ SKILL_ACCESS: dict[str, list[str]] = {
     ],
     "product_manager_agent": [
         "research-extract", "research-sync", "mas-clarify",
-        "adaptive-communication", "writing-guidelines", "human-architect-mindset",
+        "adaptive-communication", "writing-guidelines", "prose-craft",
+        "human-architect-mindset",
         "bencium-aeo", "insurgent-campaign", "find-skills",
     ],
     # graphify = recon: navigate/query the target folder before decomposing execution.
@@ -80,7 +81,7 @@ SKILL_ACCESS: dict[str, list[str]] = {
     ],
     "quality_advisor": [
         "mas-examine",
-        "writing-guidelines", "vanity-engineering-review",
+        "writing-guidelines", "prose-craft", "vanity-engineering-review",
         "design-audit", "ui-typography", "web-design-guidelines",
         "bencium-controlled-ux-designer",
         "impeccable", "find-skills",
