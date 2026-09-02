@@ -92,6 +92,40 @@ _KEYED_APPEND_GUARDS: dict[str, Any] = {
 }
 
 
+# --- DECISION-RECORD FIELD GATE (p-005) ---
+
+DECISION_LOG_FIELD_PATH = "decisions.decision_log"
+
+
+def decision_field_advisory(item: Any) -> tuple[list[str], str]:
+    """Canonical fields a new decision record leaves out, and the advisory to show.
+
+    The names come from metrics_engine.DECISION_QUALITY_FIELDS, the table the
+    decision_quality scorer itself reads, so the gate cannot ask for one set of
+    fields while the scorer counts another. Returns ([], "") for a complete
+    record and for anything that is not a dict.
+
+    Advisory, not blocking: decisions.decision_log is an append-only audit list,
+    and a refused write is a lost decision rather than a better one. The record
+    is stored as written and the author is told which names the scorer reads.
+    """
+    if not isinstance(item, dict):
+        return [], ""
+    from core.engine.metrics_engine import missing_decision_fields
+
+    missing = missing_decision_fields(item)
+    if not missing:
+        return [], ""
+    label = item.get("decision_id") or item.get("id") or "(unidentified)"
+    return missing, (
+        f"decision {label} recorded without canonical field(s): "
+        f"{', '.join(missing)}. decision_quality reads exactly these names, so a "
+        f"field spelled otherwise scores zero. Add them while the reasoning is at "
+        f"hand: back-filled later they move the score without recording anything "
+        f"that was not already decided. The record is stored as written."
+    )
+
+
 # --- INITIAL STATE FACTORY ---
 
 LITE_PHASES = ("intake", "execution", "closed")
@@ -471,6 +505,25 @@ class SharedStateManager:
         state["core_identity"]["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save(state)
         self.logger.log_write(agent_id, field_path, self.project_id, True)
+
+        # Decision-record field gate (p-005): name the canonical fields a NEW
+        # decision leaves out, after the record is safely stored. Existing
+        # records are never re-examined, so a project written before the gate
+        # still loads, snapshots and closes untouched.
+        if field_path == DECISION_LOG_FIELD_PATH:
+            missing, advisory = decision_field_advisory(item)
+            if missing:
+                logger.warning("%s", advisory)
+                self.logger.log(
+                    "decision_record_incomplete",
+                    project_id=self.project_id,
+                    agent_id=agent_id,
+                    field_path=field_path,
+                    decision=str(item.get("decision_id") or item.get("id") or ""),
+                    missing_fields=",".join(missing),
+                )
+                return WriteResult(True, guidance=advisory)
+
         return WriteResult(True)
 
     def system_append(self, section: str, field: str, item: Any) -> WriteResult:
@@ -866,6 +919,8 @@ def main_cli(args=None) -> int:
         result = sm.append(ns.agent, ns.section, ns.field, item)
         if result.success:
             print("OK")
+            if result.guidance:
+                print(f"ADVISORY: {result.guidance}")
         else:
             print(f"DENIED: {result.reason}", file=sys.stderr)
             return 1

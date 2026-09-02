@@ -102,16 +102,15 @@ class ResponseParser:
 
         status    = wire.get("s", decoded.get("status", ""))
         decisions = self._extract_decisions(wire, decoded)
+        # p-005: the field names come from the decision_quality scorer's own
+        # table, so an ingested decision is warned about exactly the names the
+        # metric reads.
+        from core.engine.metrics_engine import missing_decision_fields
+
         for index, decision in enumerate(decisions, start=1):
             label = decision.get("decision_id") or decision.get("id") or index
-            if not decision.get("rationale"):
-                warnings.append(f"decision_{label}_missing_rationale")
-            if "alternatives_considered" not in decision:
-                warnings.append(
-                    f"decision_{label}_missing_alternatives_considered"
-                )
-            if not decision.get("related_to"):
-                warnings.append(f"decision_{label}_missing_related_to")
+            for name in missing_decision_fields(decision):
+                warnings.append(f"decision_{label}_missing_{name}")
         artifacts = self._extract_artifacts(wire, decoded)
         reasoning = wire.get("rsn", decoded.get("reasoning", ""))
 

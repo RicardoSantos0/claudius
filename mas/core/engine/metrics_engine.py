@@ -84,6 +84,56 @@ EXEMPLARY_THRESHOLD = float(_AGENT_EVAL.get("exemplary_threshold", 90.0))  # fla
 PROBATION_THRESHOLD = float(_AGENT_EVAL.get("probation_threshold", 60.0))  # recommend probation
 
 
+# ---------------------------------------------------------------------------
+# Canonical decision-record fields (p-005)
+# ---------------------------------------------------------------------------
+# The fields score_decision_quality awards points for, and the single source of
+# those names. The scorer below reads this table, and so does the authoring-time
+# gate in SharedStateManager.append (plus ResponseParser and the consistency
+# check), so a rename here reaches every site instead of leaving the gate and
+# the scorer to disagree about what a complete decision record is.
+#
+# Each entry is (accepted_names, points). An entry scores when ANY of its names
+# carries a truthy value, so ("decision_id", "description") is one requirement
+# either name satisfies. The first name is the one a report asks an author for.
+DECISION_QUALITY_FIELDS: tuple[tuple[tuple[str, ...], int], ...] = (
+    (("decision_id", "description"), 2),
+    (("rationale",), 20),
+    (("alternatives_considered",), 20),
+    (("related_to",), 20),
+)
+
+# 62 with the table above: the denominator score_decision_quality reports.
+DECISION_QUALITY_MAX_POINTS: int = sum(pts for _, pts in DECISION_QUALITY_FIELDS)
+
+
+def decision_quality_points(decision) -> int:
+    """Points score_decision_quality awards one decision record (0 for a non-dict)."""
+    if not isinstance(decision, dict):
+        return 0
+    return sum(
+        pts
+        for names, pts in DECISION_QUALITY_FIELDS
+        if any(decision.get(name) for name in names)
+    )
+
+
+def missing_decision_fields(decision) -> list[str]:
+    """Canonical field names a decision record does not carry, in table order.
+
+    A requirement several names satisfy reports its first name, which is the one
+    to add. An empty list means the record scores DECISION_QUALITY_MAX_POINTS.
+    A non-dict record is missing everything.
+    """
+    if not isinstance(decision, dict):
+        return [names[0] for names, _ in DECISION_QUALITY_FIELDS]
+    return [
+        names[0]
+        for names, _ in DECISION_QUALITY_FIELDS
+        if not any(decision.get(name) for name in names)
+    ]
+
+
 def _weighted_average(metric_results: list, weights: dict) -> float:
     """Weighted mean of applicable metric scores. Metrics absent from `weights`
     default to weight 1.0. not_applicable metrics are excluded. Equal-weight
@@ -456,7 +506,8 @@ class MetricsEngine:
         """
         Quality of recorded decisions.
         Base: 50 if no decisions.
-        Per decision: +2 for documented, +20 for rationale, +20 for alternatives, +20 for related_to.
+        Per decision: the points DECISION_QUALITY_FIELDS awards (+2 documented,
+        +20 rationale, +20 alternatives_considered, +20 related_to).
         Score = 50 + average(per_decision_scores) / 2.
         """
         if not decision_log:
@@ -467,18 +518,7 @@ class MetricsEngine:
                 findings="Cannot assess without decision log.",
             )
 
-        total_pts = 0
-        for d in decision_log:
-            pts = 0
-            if d.get("description") or d.get("decision_id"):
-                pts += 2
-            if d.get("rationale"):
-                pts += 20
-            if d.get("alternatives_considered"):
-                pts += 20
-            if d.get("related_to"):
-                pts += 20
-            total_pts += pts
+        total_pts = sum(decision_quality_points(d) for d in decision_log)
 
         avg = total_pts / len(decision_log)
         score = min(100.0, 50.0 + avg / 2.0)
@@ -487,7 +527,10 @@ class MetricsEngine:
             metric="decision_quality",
             score=round(score, 1),
             evidence=f"{len(decision_log)} decisions; avg quality={avg:.1f}",
-            findings=f"Avg decision quality score: {avg:.1f}/62. Target: >40.",
+            findings=(
+                f"Avg decision quality score: {avg:.1f}/"
+                f"{DECISION_QUALITY_MAX_POINTS}. Target: >40."
+            ),
             exemplary=score > EXEMPLARY_THRESHOLD,
         )
 

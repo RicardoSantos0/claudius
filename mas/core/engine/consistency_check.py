@@ -99,17 +99,17 @@ def check_decision_record_quality(state_decisions: Any) -> list[dict]:
         decisions = decisions.get("decision_log") or decisions.get("decisions") or []
     if not isinstance(decisions, list):
         return []
+    # p-005: read the canonical names from the metric that scores them.
+    from core.engine.metrics_engine import (
+        DECISION_QUALITY_FIELDS,
+        missing_decision_fields,
+    )
+
     incomplete: list[dict[str, Any]] = []
     for index, decision in enumerate(decisions, start=1):
         if not isinstance(decision, dict):
             continue
-        missing = []
-        if not decision.get("rationale"):
-            missing.append("rationale")
-        if "alternatives_considered" not in decision:
-            missing.append("alternatives_considered")
-        if not decision.get("related_to"):
-            missing.append("related_to")
+        missing = missing_decision_fields(decision)
         if missing:
             incomplete.append(
                 {
@@ -127,8 +127,9 @@ def check_decision_record_quality(state_decisions: Any) -> list[dict]:
             "severity": "low",
             "decisions": incomplete,
             "detail": (
-                "decision records are missing rationale, alternatives, or linkage; "
-                "future wire decisions should include rat/alt/rel"
+                "decision records are missing fields the decision_quality metric "
+                "reads; a new decision should carry "
+                + ", ".join(names[0] for names, _ in DECISION_QUALITY_FIELDS)
             ),
         }
     ]
