@@ -15,7 +15,9 @@ from core.paths import repo_root
 def _normalize_db_path(db_url: str) -> str:
     if db_url.startswith("sqlite:///"):
         raw = db_url.replace("sqlite:///", "", 1)
-        if raw.startswith("/"):
+        # sqlite:////C:/db leaves a slash before a Windows drive; a POSIX
+        # absolute path such as /tmp/db keeps its slash.
+        if raw.startswith("/") and Path(raw[1:]).is_absolute():
             raw = raw[1:]
         candidate = Path(raw)
         if not candidate.is_absolute():

@@ -18,10 +18,11 @@ from __future__ import annotations
 import dataclasses
 
 # mcp 2.0 removed mcp.server.fastmcp and renamed FastMCP to MCPServer. Both names are
-# accepted because this file is synced to the public claudius mirror, which declares a
-# floor of mcp>=1.28.1 while this repo declares mcp>=2.0.0. The API this module uses is
-# identical across the rename: .tool() returns the function untouched, so every tool
-# below stays directly callable, and .run() still defaults to the stdio transport.
+# accepted so this file stays correct on either release: this repo pins
+# mcp>=1.28.1,<2.0.0, and it is synced to the public claudius mirror, which declares a
+# floor of mcp>=1.28.1. The API this module uses is identical across the rename:
+# .tool() returns the function untouched, so every tool below stays directly callable,
+# and .run() still defaults to the stdio transport.
 try:
     from mcp.server.mcpserver import MCPServer  # mcp >= 2.0
 except ImportError:  # pragma: no cover - exercised only on mcp 1.x

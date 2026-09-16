@@ -51,9 +51,9 @@ llm:
       model: "claude-fable-5"
       fallbacks:
         - provider: "anthropic"
-          model: "claude-opus-4-8"
-          opencode_model: "claude-opus-4-8"
-          on: ["model_unavailable", "refusal"]
+          model: "claude-opus-5"
+          opencode_model: "claude-opus-5"
+          "on": ["model_unavailable", "refusal"]
     standard: {provider: "anthropic", model: "claude-sonnet-5"}
     economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001"}
   default_provider_catalog: "anthropic"
@@ -73,9 +73,9 @@ llm:
           opencode_model: "claude-fable-5"
           fallbacks:
             - provider: "anthropic"
-              model: "claude-opus-4-8"
-              opencode_model: "claude-opus-4-8"
-              on: ["model_unavailable", "refusal"]
+              model: "claude-opus-5"
+              opencode_model: "claude-opus-5"
+              "on": ["model_unavailable", "refusal"]
         standard: {provider: "anthropic", model: "claude-sonnet-5", opencode_model: "claude-sonnet-5"}
         economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001", opencode_model: "claude-haiku-4-5-20251001"}
     openai:
@@ -83,11 +83,21 @@ llm:
       provider: "openai"
       opencode_provider: "openai"
       source_url: "https://developers.openai.com/api/docs/models"
-      validated_at: "2026-07-18"
+      validated_at: "2026-09-16"
       lifecycle_state: "active"
       credential_env: "OPENAI_API_KEY"
       profiles:
-        reasoning: {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high", opencode_model: "gpt-5.6-sol"}
+        reasoning:
+          provider: "openai"
+          model: "gpt-6-astra"
+          reasoning_effort: "high"
+          opencode_model: "gpt-6-astra"
+          fallbacks:
+            - provider: "openai"
+              model: "gpt-5.6-sol"
+              reasoning_effort: "high"
+              opencode_model: "gpt-5.6-sol"
+              "on": ["model_unavailable", "refusal"]
         standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium", opencode_model: "gpt-5.6-terra"}
         economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low", opencode_model: "gpt-5.6-luna"}
     gemini:
@@ -150,7 +160,12 @@ llm:
       catalog: "openai"
       enforcement_capability: "client_selectable"
       profiles:
-        reasoning: {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high"}
+        reasoning:
+          provider: "openai"
+          model: "gpt-6-astra"
+          reasoning_effort: "high"
+          fallbacks:
+            - {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high", "on": ["model_unavailable", "refusal"]}
         standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium"}
         economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low"}
     opencode:

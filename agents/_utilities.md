@@ -54,7 +54,8 @@ mas ingest {project_id} --agent {agent_id} \
 ```
 
 Planning roles retain `reasoning`. In the Anthropic catalog that is Fable first
-and Opus 4.8 only for declared unavailability/refusal. Never switch for rate
+and Opus 5 only for declared unavailability/refusal; in the OpenAI catalog it is
+GPT-6 Astra first and GPT-5.6 Sol on the same terms. Never switch for rate
 limits or generic errors, and never call a manual selection enforced without
 execution evidence.
 

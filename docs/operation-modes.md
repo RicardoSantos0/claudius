@@ -133,7 +133,7 @@ contributes to verified cache-hit and billed-token-reduction metrics;
 client/operator values remain labelled attestations.
 
 Selection is not execution proof. Planning roles retain `reasoning`; Claude
-selects Fable first and Opus 4.8 only for exclusion/unavailability or refusal,
+selects Fable first and Opus 5 only for exclusion/unavailability or refusal,
 while other clients resolve through their catalog. Reasoning state changes
 require a matching receipt. Client/operator receipts are attestations;
 autonomous provider-reported model identities are checked directly.

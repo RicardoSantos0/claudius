@@ -266,7 +266,9 @@ def _emit_prompt(project_id: str, agent_id: str, assembled: str, selection=None)
 
 def _resolve_sqlite_path(db_url: str) -> Path:
     raw = db_url.replace("sqlite:///", "", 1)
-    if raw.startswith("/"):
+    # sqlite:////C:/db leaves a slash before a Windows drive; a POSIX
+    # absolute path such as /tmp/db keeps its slash.
+    if raw.startswith("/") and Path(raw[1:]).is_absolute():
         raw = raw[1:]
     p = Path(raw)
     if not p.is_absolute():

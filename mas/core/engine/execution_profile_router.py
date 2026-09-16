@@ -28,6 +28,15 @@ class RouteAuditPersistenceError(RuntimeError):
     """Raised when required route-audit persistence cannot be guaranteed."""
 
 
+def _fallback_conditions(entry: Mapping[Any, Any]) -> list[Any]:
+    """Return a fallback entry's `on` conditions.
+
+    YAML 1.1 loads an unquoted `on:` key as boolean True, so workspace configs
+    written before the key was quoted carry the conditions under True.
+    """
+    return list(entry.get("on", entry.get(True, [])) or [])
+
+
 @dataclass(frozen=True)
 class RouteSelection:
     agent_id: str
@@ -527,7 +536,7 @@ class ExecutionProfileRouter:
                 "model": model,
                 "reasoning_effort": reasoning_effort,
                 "fallback_on": (
-                    list(raw_fallbacks[0].get("on", []) or [])
+                    _fallback_conditions(raw_fallbacks[0])
                     if raw_fallbacks and isinstance(raw_fallbacks[0], dict)
                     else []
                 ),
@@ -552,7 +561,7 @@ class ExecutionProfileRouter:
                 "model": str(item.get("model") or ""),
                 "reasoning_effort": item.get("reasoning_effort"),
                 "fallback_on": (
-                    list(next_raw.get("on", []) or [])
+                    _fallback_conditions(next_raw)
                     if isinstance(next_raw, dict)
                     else []
                 ),

@@ -98,7 +98,7 @@ mas status proj-YYYYMMDD-NNN-my-project
 Apply `routing.model` at agent invocation, then return
 `dispatch.dispatch_id`, actual provider, and actual model through
 `mas ingest`/`mas_ingest`. Planning roles keep `reasoning`; Claude selects
-Fable first and Opus 4.8 only after declared exclusion/unavailability or
+Fable first and Opus 5 only after declared exclusion/unavailability or
 refusal. Manual receipts are attestations unless the provider reports identity.
 
 ### Mode 2 — `mas run` CLI (selected provider credential + adapter)

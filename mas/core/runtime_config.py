@@ -39,7 +39,9 @@ def _normalize_sqlite_url(raw_url: str | None) -> str | None:
     if not raw_url or not raw_url.startswith("sqlite:///"):
         return raw_url
     raw = raw_url.replace("sqlite:///", "", 1)
-    if raw.startswith("/"):
+    # sqlite:////C:/db leaves a slash before a Windows drive; a POSIX
+    # absolute path such as /tmp/db keeps its slash.
+    if raw.startswith("/") and Path(raw[1:]).is_absolute():
         raw = raw[1:]
     candidate = Path(raw)
     if not candidate.is_absolute():

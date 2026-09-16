@@ -110,7 +110,9 @@ def _sqlite_path(db_path: Path | None, resolved_url: str | None) -> Path:
     """
     if resolved_url and resolved_url.startswith("sqlite:///"):
         raw = resolved_url.replace("sqlite:///", "", 1)
-        if raw.startswith("/"):
+        # sqlite:////C:/db leaves a slash before a Windows drive; a POSIX
+        # absolute path such as /tmp/db keeps its slash.
+        if raw.startswith("/") and Path(raw[1:]).is_absolute():
             raw = raw[1:]
         candidate = Path(raw)
         if not candidate.is_absolute():

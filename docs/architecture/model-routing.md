@@ -29,7 +29,11 @@ Each route records a unique `dispatch_id`, ordered approved candidates, selected
 index, reason, and receipt requirement. The Anthropic reasoning chain is:
 
 1. `anthropic/claude-fable-5`;
-2. `anthropic/claude-opus-4-8`, only after `model_unavailable` or `refusal`.
+2. `anthropic/claude-opus-5`, only after `model_unavailable` or `refusal`.
+
+The OpenAI and Codex reasoning chain is `openai/gpt-6-astra`, then
+`openai/gpt-5.6-sol` on the same two failure classes. Standard and economy stay
+on `gpt-5.6-terra` and `gpt-5.6-luna`, which OpenAI still lists as current.
 
 Constrain a client or subscription plan before launch:
 
@@ -37,7 +41,7 @@ Constrain a client or subscription plan before launch:
 mas prompt <project-id> product_manager_agent --surface claude `
   --exclude-model claude-fable-5 --json
 mas prompt <project-id> project_manager_agent --surface claude `
-  --available-model claude-opus-4-8 --json
+  --available-model claude-opus-5 --json
 ```
 
 `MAS_AVAILABLE_MODELS` and `MAS_EXCLUDED_MODELS` provide comma-separated

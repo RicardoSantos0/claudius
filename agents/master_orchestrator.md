@@ -489,7 +489,7 @@ When invoked directly through Claude Code rather than live `mas run`, do manual 
 3. Spawn with the selected model:
    `Agent(subagent_type="<agent_id>", prompt=<prompt>, model=<routing.model>)`.
 4. Claude planning roles use Fable first. If the active plan excludes it,
-   regenerate with `--exclude-model claude-fable-5` so MAS selects Opus 4.8.
+   regenerate with `--exclude-model claude-fable-5` so MAS selects Opus 5.
    Runtime fallback is allowed only for unavailability or refusal.
 5. Apply the wire response through `mas ingest` with `--dispatch-id`,
    `--reported-provider`, `--reported-model`, and `--verification-source`.

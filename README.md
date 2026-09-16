@@ -518,8 +518,9 @@ MAS routes a semantic profile before choosing a vendor model. Planning, review,
 and evaluation default to `reasoning`; bounded execution defaults to `economy`.
 High-risk, critical-agent, and retry paths escalate before any economy assignment.
 Product and project manager roles retain `reasoning` in every phase. On Claude,
-the ordered reasoning route is Fable first and Opus 4.8 only for declared
-unavailability/exclusion or refusal.
+the ordered reasoning route is Fable first and Opus 5 only for declared
+unavailability/exclusion or refusal. On OpenAI and Codex it is GPT-6 Astra
+first and GPT-5.6 Sol on the same terms.
 
 `mas/system_config.yaml` ships interchangeable Anthropic, OpenAI, and
 Gemini/LiteLLM catalogs. Select one with `--catalog` or `MAS_MODEL_CATALOG`.
