@@ -79,6 +79,12 @@ mas/roster/exemplary_references.yaml
 skills/notebooklm/data/browser_state/
 skills/notebooklm/data/auth_info.json
 
+# Claude Code writes account-synced Anthropic skills here through the
+# ~/.claude/skills symlink, and moves the copies it replaces into .trash/.
+# Both are proprietary and machine-specific.
+skills/synced/
+skills/.trash/
+
 # Editor
 .vscode/settings.json
 .vscode/mcp.json

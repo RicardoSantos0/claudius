@@ -27,6 +27,11 @@ except ImportError:
     print("ERROR: PyYAML not installed. Run: uv pip install pyyaml", file=sys.stderr)
     sys.exit(2)
 
+# Claude Code syncs account-provided skills into skills/synced/ through the
+# ~/.claude/skills symlink, and moves the copies it replaces into skills/.trash/.
+# Neither holds repo skills or carries a registry entry.
+HARNESS_DIRS = {"synced", ".trash"}
+
 
 def get_repo_root() -> Path:
     parser = argparse.ArgumentParser(description="Validate MAS skill registry")
@@ -88,7 +93,7 @@ def main() -> int:
     # Check 1: Every skills/*/SKILL.md exists and has valid frontmatter
     if skills_dir.exists():
         for skill_dir in sorted(skills_dir.iterdir()):
-            if not skill_dir.is_dir():
+            if not skill_dir.is_dir() or skill_dir.name in HARNESS_DIRS:
                 continue
             skill_md = skill_dir / "SKILL.md"
             if not skill_md.exists():
