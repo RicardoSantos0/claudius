@@ -27,7 +27,7 @@ dependencies = [
     "click>=8.4.2",
     # Security lower bounds for transitive HTTP/name handling packages.
     "idna>=3.15",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
 ]
 
 [project.urls]
