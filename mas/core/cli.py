@@ -2894,7 +2894,7 @@ def run(
               help="Manual client capability, e.g. recommended or client_enforced.")
 @click.option("--surface", default="generic", show_default=True,
               type=click.Choice(
-                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+                  ["generic", "claude", "copilot", "codex", "antigravity", "opencode", "local"]
               ),
               help="Manual client surface for provider/model adapter hints.")
 @click.option("--catalog", "provider_catalog", default=None,
@@ -3020,7 +3020,7 @@ def prompt(
               help="After applying, print the next agent prompt (default: yes).")
 @click.option("--surface", default="generic", show_default=True,
               type=click.Choice(
-                  ["generic", "claude", "copilot", "codex", "opencode", "local"]
+                  ["generic", "claude", "copilot", "codex", "antigravity", "opencode", "local"]
               ),
               help="Manual client surface for the automatically selected next route.")
 @click.option("--catalog", "provider_catalog", default=None,

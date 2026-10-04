@@ -43,49 +43,65 @@ defaults:
 # --- LLM CONFIGURATION ---
 llm:
   provider: "anthropic"
-  master_model: "claude-fable-5"         # Legacy reasoning fallback
-  default_model: "claude-sonnet-5"       # Legacy standard fallback
+  master_model: "claude-opus-5-5"        # Legacy reasoning fallback
+  default_model: "claude-sonnet-5-5"     # Legacy standard fallback
+  # Provider-neutral semantic routing. Profile targets are configurable and
+  # may use different providers; MAS_<PROFILE>_{PROVIDER,MODEL} env vars win.
+  # Tiering rule: planning and judgement work routes to the
+  # reasoning tier, execution work to the cheaper standard/economy tiers.
   execution_profiles:
     reasoning:
       provider: "anthropic"
-      model: "claude-fable-5"
+      model: "claude-opus-5-5"
       fallbacks:
         - provider: "anthropic"
-          model: "claude-opus-5"
-          opencode_model: "claude-opus-5"
+          model: "claude-fable-5-1"
+          opencode_model: "claude-fable-5-1"
           "on": ["model_unavailable", "refusal"]
-    standard: {provider: "anthropic", model: "claude-sonnet-5"}
-    economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001"}
+    standard:
+      provider: "anthropic"
+      model: "claude-sonnet-5-5"
+    economy:
+      provider: "anthropic"
+      model: "claude-haiku-4-5-20251001"
+  # Provider catalogs let the same semantic route target multiple vendors.
+  # Gemini identifiers are LiteLLM model IDs; no credentials are stored here.
   default_provider_catalog: "anthropic"
   provider_catalogs:
     anthropic:
       adapter: "anthropic"
       provider: "anthropic"
       opencode_provider: "anthropic"
-      source_url: "https://platform.claude.com/docs/en/about-claude/models/overview"
-      validated_at: "2026-07-18"
+      source_url: "https://platform.claude.com/docs/en/models/overview"
+      validated_at: "2026-10-04"
       lifecycle_state: "active"
       credential_env: "ANTHROPIC_API_KEY"
+      # Source recommends Opus 5.5 for most workloads and Fable 5.1 where Opus
+      # at higher effort falls short. Haiku 4.5 retires not sooner than
+      # 2026-10-15; revisit the economy tier when a successor is listed.
       profiles:
         reasoning:
           provider: "anthropic"
-          model: "claude-fable-5"
-          opencode_model: "claude-fable-5"
+          model: "claude-opus-5-5"
+          opencode_model: "claude-opus-5-5"
           fallbacks:
             - provider: "anthropic"
-              model: "claude-opus-5"
-              opencode_model: "claude-opus-5"
+              model: "claude-fable-5-1"
+              opencode_model: "claude-fable-5-1"
               "on": ["model_unavailable", "refusal"]
-        standard: {provider: "anthropic", model: "claude-sonnet-5", opencode_model: "claude-sonnet-5"}
+        standard: {provider: "anthropic", model: "claude-sonnet-5-5", opencode_model: "claude-sonnet-5-5"}
         economy: {provider: "anthropic", model: "claude-haiku-4-5-20251001", opencode_model: "claude-haiku-4-5-20251001"}
     openai:
       adapter: "openai"
       provider: "openai"
       opencode_provider: "openai"
       source_url: "https://developers.openai.com/api/docs/models"
-      validated_at: "2026-09-16"
+      validated_at: "2026-10-04"
       lifecycle_state: "active"
       credential_env: "OPENAI_API_KEY"
+      # Current lineup: Astra (most capable), 6.1 Sol (near-Astra, balanced), Luna
+      # (most efficient). The 5.6 Sol/Terra/Luna family has left the current page
+      # without a deprecation notice. The fallback reuses 6.1 Sol at high effort.
       profiles:
         reasoning:
           provider: "openai"
@@ -94,24 +110,66 @@ llm:
           opencode_model: "gpt-6-astra"
           fallbacks:
             - provider: "openai"
-              model: "gpt-5.6-sol"
+              model: "gpt-6.1-sol"
               reasoning_effort: "high"
-              opencode_model: "gpt-5.6-sol"
+              opencode_model: "gpt-6.1-sol"
               "on": ["model_unavailable", "refusal"]
-        standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium", opencode_model: "gpt-5.6-terra"}
-        economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low", opencode_model: "gpt-5.6-luna"}
+        standard: {provider: "openai", model: "gpt-6.1-sol", reasoning_effort: "medium", opencode_model: "gpt-6.1-sol"}
+        economy: {provider: "openai", model: "gpt-6-luna", reasoning_effort: "low", opencode_model: "gpt-6-luna"}
     gemini:
       adapter: "litellm"
       provider: "litellm"
       opencode_provider: "google"
       source_url: "https://ai.google.dev/gemini-api/docs/models"
-      validated_at: "2026-07-18"
+      validated_at: "2026-10-04"
       lifecycle_state: "active"
       credential_env: "GEMINI_API_KEY"
+      # Google has no generally available Pro text model; gemini-3.1-pro-preview is
+      # preview-only and excluded. 3.8 Flash is Google's most intelligent GA model.
       profiles:
-        reasoning: {provider: "litellm", model: "gemini/gemini-3.5-flash", reasoning_effort: "high", opencode_model: "gemini-3.5-flash"}
-        standard: {provider: "litellm", model: "gemini/gemini-3.5-flash", reasoning_effort: "medium", opencode_model: "gemini-3.5-flash"}
-        economy: {provider: "litellm", model: "gemini/gemini-3.1-flash-lite", opencode_model: "gemini-3.1-flash-lite"}
+        reasoning:
+          provider: "litellm"
+          model: "gemini/gemini-3.8-flash"
+          reasoning_effort: "high"
+          opencode_model: "gemini-3.8-flash"
+          fallbacks:
+            - provider: "litellm"
+              model: "gemini/gemini-3.7-flash"
+              reasoning_effort: "high"
+              opencode_model: "gemini-3.7-flash"
+              "on": ["model_unavailable", "refusal"]
+        standard: {provider: "litellm", model: "gemini/gemini-3.7-flash", reasoning_effort: "medium", opencode_model: "gemini-3.7-flash"}
+        economy: {provider: "litellm", model: "gemini/gemini-3.5-flash-lite", reasoning_effort: "low", opencode_model: "gemini-3.5-flash-lite"}
+    ollama:
+      # Example local catalogue for Ollama. Pull the models first
+      # (`ollama pull qwen3.6`, etc.) or edit the tags to what `ollama list` shows.
+      # Provider "ollama" uses the OpenAI-compatible adapter at
+      # http://localhost:11434/v1 (override with MAS_OLLAMA_BASE_URL), so local runs
+      # are labelled ollama in receipts rather than openai. No credential.
+      adapter: "openai_compatible"
+      provider: "ollama"
+      opencode_provider: "ollama"
+      source_url: "https://ollama.com/library"
+      validated_at: "2026-10-04"
+      lifecycle_state: "active"
+      # Readiness variable, not a secret: runs default to localhost without it,
+      # while the opt-in live canary skips until it is set.
+      credential_env: "MAS_OLLAMA_BASE_URL"
+      profiles:
+        reasoning:
+          # qwen3.6: 36B MoE with thinking and tools.
+          provider: "ollama"
+          model: "qwen3.6:latest"
+          opencode_model: "qwen3.6:latest"
+          fallbacks:
+            - provider: "ollama"
+              model: "gemma4:26b"
+              opencode_model: "gemma4:26b"
+              "on": ["model_unavailable", "refusal"]
+        # qwen3-coder-next: coding specialist for delivery work.
+        standard: {provider: "ollama", model: "qwen3-coder-next:latest", opencode_model: "qwen3-coder-next:latest"}
+        # lfm2: small and fast, for clerical work.
+        economy: {provider: "ollama", model: "lfm2:latest", opencode_model: "lfm2:latest"}
   phase_profiles:
     intake: "reasoning"
     specification: "reasoning"
@@ -138,8 +196,8 @@ llm:
     retry_escalation_profile: "standard"
     manual_enforcement_capability: "recommended"
     receipt_required_profiles: ["reasoning"]
-  # Capability describes whether a host can apply the selected route. Manual
-  # selection remains unverified until the receipt is ingested.
+  # First-class manual client surfaces. Capability describes whether a host can
+  # apply the route; manual selection remains unverified until receipt ingestion.
   surfaces:
     generic:
       adapter: "manual"
@@ -151,11 +209,35 @@ llm:
       enforcement_capability: "client_selectable"
       profiles: {}
     copilot:
+      # Copilot selectors are lowercase with dotted versions and no date suffix;
+      # Anthropic API IDs (claude-opus-5-5) are not accepted and an unknown
+      # --model silently falls back to another model. These ids appear in both the
+      # free and paid Copilot catalogues as of 2026-10-04; check your account's
+      # list (VS Code model picker or Copilot CLI /model) and edit if it differs.
       adapter: "github_copilot_agent"
       catalog: "inherit"
       enforcement_capability: "advisory"
-      profiles: {}
+      profiles:
+        reasoning:
+          provider: "github_copilot"
+          model: "claude-sonnet-5.5"
+          launch_args: ["--model", "{model}"]
+          fallbacks:
+            - provider: "github_copilot"
+              model: "claude-sonnet-5"
+              "on": ["model_unavailable", "refusal"]
+        standard:
+          provider: "github_copilot"
+          model: "gemini-3.8-flash"
+          launch_args: ["--model", "{model}"]
+        economy:
+          provider: "github_copilot"
+          model: "gpt-6-luna"
+          launch_args: ["--model", "{model}"]
     codex:
+      # Each tier launches a Codex profile file ~/.codex/mas-<profile>.config.toml
+      # that pins model and model_reasoning_effort, so the user's global default in
+      # ~/.codex/config.toml is left untouched. Create one file per tier.
       adapter: "codex_config"
       catalog: "openai"
       enforcement_capability: "client_selectable"
@@ -164,25 +246,82 @@ llm:
           provider: "openai"
           model: "gpt-6-astra"
           reasoning_effort: "high"
+          launch_args: ["--profile", "mas-{profile}", "-m", "{model}"]
           fallbacks:
-            - {provider: "openai", model: "gpt-5.6-sol", reasoning_effort: "high", "on": ["model_unavailable", "refusal"]}
-        standard: {provider: "openai", model: "gpt-5.6-terra", reasoning_effort: "medium"}
-        economy: {provider: "openai", model: "gpt-5.6-luna", reasoning_effort: "low"}
+            - provider: "openai"
+              model: "gpt-6.1-sol"
+              reasoning_effort: "high"
+              "on": ["model_unavailable", "refusal"]
+        standard:
+          provider: "openai"
+          model: "gpt-6.1-sol"
+          reasoning_effort: "medium"
+          launch_args: ["--profile", "mas-{profile}", "-m", "{model}"]
+        economy:
+          provider: "openai"
+          model: "gpt-6-luna"
+          reasoning_effort: "low"
+          launch_args: ["--profile", "mas-{profile}", "-m", "{model}"]
+    antigravity:
+      # Gemini runs through Google Antigravity, whose CLI `agy` replaces the Gemini
+      # CLI. Ids come from `agy models`; these are offered on every Antigravity plan
+      # (Opus 5.5 needs Google AI Ultra), so Opus 4.6 carries the reasoning tier.
+      # Gemini ids embed their thinking level; --effort applies to the Claude route.
+      adapter: "antigravity_cli"
+      catalog: "gemini"
+      enforcement_capability: "client_selectable"
+      profiles:
+        reasoning:
+          provider: "google_antigravity"
+          model: "claude-opus-4-6-thinking"
+          reasoning_effort: "high"
+          launch_args: ["--model", "{model}", "--effort", "high"]
+          fallbacks:
+            - provider: "google_antigravity"
+              model: "gemini-3.1-pro-high"
+              "on": ["model_unavailable", "refusal"]
+        standard:
+          provider: "google_antigravity"
+          model: "gemini-3.8-flash-medium"
+          launch_args: ["--model", "{model}"]
+        economy:
+          provider: "google_antigravity"
+          model: "gemini-3.6-flash-low"
+          launch_args: ["--model", "{model}"]
     opencode:
+      # Inherits the selected catalogue and exposes `-m provider/model`. Point it at
+      # the ollama catalogue when opencode has no cloud credentials.
       adapter: "opencode_cli"
       catalog: "inherit"
       enforcement_capability: "client_selectable"
       profiles: {}
     local:
       adapter: "openai_compatible"
-      catalog: "inherit"
+      catalog: "ollama"
       enforcement_capability: "client_selectable"
       profiles: {}
   max_tokens: 4096
   temperature: 0.3
+  # Role tiers: planning and judgement roles keep the
+  # reasoning profile in every phase; execution roles use cheaper tiers.
+  # Risk, critical-agent and retry escalation still outrank these overrides, so
+  # reliability_engineer stays on reasoning via routing.critical_agents, and
+  # delivery engineers added to a workspace should use "standard". Roles not listed (the consultant panel) follow
+  # phase_profiles. Agent frontmatter stays `model: inherit` (provider-agnostic,
+  # enforced by scripts/validate_agents.py); these overrides are the only place a
+  # role's tier is set.
+  # The selected surface/catalog still determines the concrete provider family.
   agent_overrides:
+    master_orchestrator: "reasoning"
+    inquirer_agent: "reasoning"
     product_manager_agent: "reasoning"
     project_manager_agent: "reasoning"
+    hr_agent: "reasoning"
+    spawner_agent: "reasoning"
+    evaluator_agent: "reasoning"
+    trainer_agent: "reasoning"
+    scribe_agent: "economy"
+    session_scheduler: "economy"
 
 # --- TRUST TIERS ---
 trust_tiers:

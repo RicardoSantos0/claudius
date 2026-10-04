@@ -29,13 +29,15 @@ Frontmatter rules checked by the validator:
   Tools may be a comma-separated string or a YAML list.
 - `_utilities.md` is skipped by the validator (it is not an agent).
 
-Use `model: inherit` and `model_profile: auto` for provider-neutral routing. An
-explicit model is a legacy override and should be reserved for a documented,
-authorized compatibility requirement.
-Task-specific routing belongs in `llm.agent_overrides` and provider catalogs,
-not agent-file pins. Planning roles resolve to `reasoning`: Claude receives
-Fable first with approved Opus fallback, while Codex/OpenCode/local surfaces
-resolve the same semantic profile through their selected catalog.
+Use `model: inherit` and `model_profile: auto`; `scripts/validate_agents.py`
+refuses any other `model` value, so agent files stay provider-agnostic. Different
+tasks still get different models, because the role's tier is routing policy in
+`llm.agent_overrides`: planning and judgement roles use `reasoning`, clerical
+roles `economy`, delivery engineers you add should use `standard`, and critical
+agents escalate to `reasoning`. The selected surface's catalog turns that tier
+into a concrete model. On Claude the reasoning tier is Opus 5.5 with Fable 5.1
+as a backup only for unavailability or refusal; Codex, Copilot, Antigravity,
+OpenCode and local surfaces map the same tiers to their own models.
 
 ## 2. Register the agent
 

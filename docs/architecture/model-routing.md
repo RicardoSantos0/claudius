@@ -19,29 +19,37 @@ escalation; per-agent override; phase profile; legacy fallback. Provider/model
 overrides are atomic pairs—a partial pair is rejected rather than combined with a
 different catalog.
 
-`product_manager_agent` and `project_manager_agent` always receive `reasoning`,
-including planning corrections dispatched during execution. The selected
-surface/catalog still determines the concrete provider.
+Role tiers in `llm.agent_overrides` make different tasks use different models
+without pinning any provider. Planning and judgement roles (`master_orchestrator`,
+`inquirer_agent`, `product_manager_agent`, `project_manager_agent`, `hr_agent`,
+`spawner_agent`, `evaluator_agent`, `trainer_agent`) keep `reasoning` in every
+phase, and clerical roles (`scribe_agent`, `session_scheduler`) use `economy`, so
+routine work does not consume the strongest model. Escalation still outranks
+these overrides. The selected surface/catalog determines the concrete provider.
 
 ## Ordered candidates and fallback
 
 Each route records a unique `dispatch_id`, ordered approved candidates, selected
 index, reason, and receipt requirement. The Anthropic reasoning chain is:
 
-1. `anthropic/claude-fable-5`;
-2. `anthropic/claude-opus-5`, only after `model_unavailable` or `refusal`.
+1. `anthropic/claude-opus-5-5`;
+2. `anthropic/claude-fable-5-1`, only after `model_unavailable` or `refusal`;
+   Fable is a backup, never the default.
 
 The OpenAI and Codex reasoning chain is `openai/gpt-6-astra`, then
-`openai/gpt-5.6-sol` on the same two failure classes. Standard and economy stay
-on `gpt-5.6-terra` and `gpt-5.6-luna`, which OpenAI still lists as current.
+`openai/gpt-6.1-sol` on the same two failure classes. Standard is `gpt-6.1-sol`
+and economy `gpt-6-luna`; the GPT-5.6 family has left OpenAI's current lineup.
+Gemini runs `gemini-3.8-flash` then `gemini-3.7-flash` for reasoning,
+`gemini-3.7-flash` for standard and `gemini-3.5-flash-lite` for economy. IDs were
+revalidated against each provider's documentation on 2026-10-04.
 
 Constrain a client or subscription plan before launch:
 
 ```powershell
 mas prompt <project-id> product_manager_agent --surface claude `
-  --exclude-model claude-fable-5 --json
+  --exclude-model claude-opus-5-5 --json
 mas prompt <project-id> project_manager_agent --surface claude `
-  --available-model claude-opus-5 --json
+  --available-model claude-fable-5-1 --json
 ```
 
 `MAS_AVAILABLE_MODELS` and `MAS_EXCLUDED_MODELS` provide comma-separated
@@ -89,16 +97,25 @@ dispatch verification is not required.
 mas prompt <project-id> product_manager_agent --surface claude --json
 mas prompt <project-id> --surface copilot --json
 mas prompt <project-id> --surface codex --json
+mas prompt <project-id> --surface antigravity --json
 mas prompt <project-id> --surface opencode --catalog gemini --json
 mas prompt <project-id> --surface local --provider openai --model my-local-model --json
 ```
 
-Claude uses the Anthropic catalog. Codex uses its OpenAI catalog and
-reasoning-effort hint. OpenCode inherits the catalog and receives
-`-m provider/model`. GitHub Copilot remains advisory unless its active host can
-select and report a model. Local clients must supply an explicit compatible
-provider/model pair or catalog; MAS fails closed instead of inheriting a
-default cloud route.
+Claude uses the Anthropic catalog. Codex launches `--profile mas-<tier> -m
+<model>`, where `~/.codex/mas-<tier>.config.toml` pins the model and reasoning
+effort. Copilot uses its own dotted selector ids with `--model`, and Antigravity,
+which replaces the Gemini CLI, uses `agy --model`. OpenCode inherits the catalog
+and receives `-m provider/model`. The local surface uses the Ollama catalog. A
+fallback re-renders the launch arguments, so a client is never launched with the
+primary model it just rejected. GitHub Copilot remains advisory unless its active
+host can select and report a model.
+
+Map client surfaces to the models the installed client actually lists
+(`agy models`, `opencode models`, the Copilot model picker,
+`~/.codex/models_cache.json`) rather than to vendor documentation: an account's
+catalog can differ from the public list, and Copilot silently substitutes
+another model for an unknown `--model`.
 
 Manual accuracy has four distinct claims:
 
@@ -116,7 +133,7 @@ before `advance_phase` or `delegate`:
 ```powershell
 mas ingest <project-id> --agent product_manager_agent `
   --dispatch-id <id> --reported-provider anthropic `
-  --reported-model claude-fable-5 --verification-source client < response.txt
+  --reported-model claude-opus-5-5 --verification-source client < response.txt
 ```
 
 MCP clients pass the same fields to `mas_ingest`. Missing, mismatched, or
@@ -128,9 +145,10 @@ Claude Code custom-agent invocation should pass the envelope model explicitly.
 The `CLAUDE_CODE_SUBAGENT_MODEL` environment setting has higher precedence than
 per-invocation and frontmatter settings, so the receipt remains necessary.
 
-Agent prompt frontmatter uses `model: inherit` and `model_profile: auto`. The
-canonical registry leaves its legacy `model` override empty. Phase, risk policy,
-catalog, and surface mapping therefore determine the actual provider/model.
+Agent prompt frontmatter uses `model: inherit` and `model_profile: auto`, and
+`scripts/validate_agents.py` refuses any pinned value. The canonical registry
+leaves its legacy `model` override empty. Role tiers, phase, risk policy, catalog,
+and surface mapping therefore determine the actual provider/model.
 
 ## Audit and telemetry
 
@@ -164,7 +182,7 @@ MCP clients have equivalent `mas_model_catalogs`, `mas_model_canary`, and
 
 ## Source basis
 
-- [Anthropic model overview](https://platform.claude.com/docs/en/about-claude/models/overview)
+- [Anthropic model overview](https://platform.claude.com/docs/en/models/overview)
 - [Anthropic model IDs and versioning](https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions)
 - [Anthropic refusals and fallback](https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback)
 - [Claude Code subagents and model precedence](https://code.claude.com/docs/en/sub-agents)
@@ -173,6 +191,10 @@ MCP clients have equivalent `mas_model_catalogs`, `mas_model_canary`, and
 - [Codex subagent model guidance](https://developers.openai.com/codex/subagents)
 - [Gemini model catalog](https://ai.google.dev/gemini-api/docs/models)
 - [OpenCode model selection](https://opencode.ai/docs/models/)
+- [OpenCode providers, including Ollama](https://opencode.ai/docs/providers/)
+- [Codex profiles](https://learn.chatgpt.com/docs/config-file/config-advanced)
+- [Antigravity models](https://antigravity.google/docs/models/)
+- [Ollama library](https://ollama.com/library)
 
 Revalidate configured IDs against the official sources before changing defaults,
 and evaluate quality on your own workload before production rollout.

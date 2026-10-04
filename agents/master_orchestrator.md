@@ -488,9 +488,12 @@ When invoked directly through Claude Code rather than live `mas run`, do manual 
    `routing.candidates` from the envelope.
 3. Spawn with the selected model:
    `Agent(subagent_type="<agent_id>", prompt=<prompt>, model=<routing.model>)`.
-4. Claude planning roles use Fable first. If the active plan excludes it,
-   regenerate with `--exclude-model claude-fable-5` so MAS selects Opus 5.
-   Runtime fallback is allowed only for unavailability or refusal.
+4. Each role's tier comes from `llm.agent_overrides`, so always pass
+   `routing.model`; agent files inherit and would otherwise run on the session
+   model. Claude reasoning-tier roles use Opus 5.5 first. If the active plan
+   excludes it, regenerate with `--exclude-model claude-opus-5-5` so MAS selects
+   the Fable 5.1 backup. Runtime fallback is allowed only for unavailability or
+   refusal.
 5. Apply the wire response through `mas ingest` with `--dispatch-id`,
    `--reported-provider`, `--reported-model`, and `--verification-source`.
    Do not mutate state directly in place of ingestion.

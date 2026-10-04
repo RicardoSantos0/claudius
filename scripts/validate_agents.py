@@ -9,6 +9,7 @@ Checks:
   4. Every agent file is listed in mas/roster/registry_canonical.yaml
   5. Every registry entry's file exists on disk
   6. Registry claude_name is lowercase hyphenated
+  7. Frontmatter `model` is `inherit` (tiers live in llm.agent_overrides)
 
 Usage:
     python scripts/validate_agents.py [--repo-root <path>]
@@ -135,6 +136,27 @@ def validate_registry_entry(agent_id: str, entry: dict, repo_root: Path) -> list
     return errors
 
 
+# Agent frontmatter stays provider-agnostic: `model: inherit` everywhere. Per-task
+# model differences (planning on the reasoning tier, execution on standard/economy)
+# are routing policy and live in llm.agent_overrides / phase_profiles in
+# mas/system_config.yaml, which every surface honours when MAS dispatches. A pinned
+# vendor ID or client alias here would bypass that policy on one client only.
+ALLOWED_MODEL_VALUES = {"inherit", ""}
+
+
+def validate_model_tiers(agent_files: list[Path], repo_root: Path) -> list[str]:
+    errors = []
+    for path in agent_files:
+        frontmatter = parse_frontmatter(path.read_text(encoding="utf-8")) or {}
+        model = str(frontmatter.get("model", "inherit") or "")
+        if model not in ALLOWED_MODEL_VALUES:
+            errors.append(
+                f"{path.name}: model '{model}' pins a model; use 'inherit' and set the "
+                f"role's tier in llm.agent_overrides (mas/system_config.yaml)"
+            )
+    return errors
+
+
 def main() -> None:
     repo_root = get_repo_root()
     agents_dir = repo_root / "agents"
@@ -155,6 +177,10 @@ def main() -> None:
         agent_file_names.add(agent_file.name)
         errors = validate_agent_file(agent_file)
         all_errors.extend(errors)
+
+    # 1b. Frontmatter model must stay provider-agnostic
+    all_errors.extend(validate_model_tiers(
+        [f for f in agent_files if f.name not in SKIP_FILES], repo_root))
 
     # 2. Load registry and validate coverage
     registry_agents = load_registry(registry_path)

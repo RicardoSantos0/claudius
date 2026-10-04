@@ -159,7 +159,7 @@ skills, and runtime context in the volatile tail. See
 [`docs/architecture/prompt-token-contract.md`](../docs/architecture/prompt-token-contract.md).
 
 Dispatch envelopes also carry an ordered candidate list and `dispatch_id`.
-Planning roles retain `reasoning`; Anthropic uses Fable first and Opus 5 only
+Planning roles retain `reasoning`; Anthropic uses Opus 5.5 first and Fable 5.1 only
 for declared unavailability/refusal. Manual reasoning outputs must return a
 matching provider/model receipt before state-changing actions are accepted.
 Client/operator receipts are attestations, not provider proof.

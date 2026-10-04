@@ -266,14 +266,24 @@ class _AnthropicAdapter(ProviderAdapter):
 
 
 class _OpenAIAdapter(ProviderAdapter):
-    """OpenAI-compatible API ("openai"/"azure"). Set MAS_OPENAI_BASE_URL to reach a
-    local OpenAI-compatible endpoint (Ollama/LM Studio/Opencode/vLLM) keyless."""
+    """OpenAI-compatible API ("openai"/"azure"/"ollama"). Set MAS_OPENAI_BASE_URL to reach a
+    local OpenAI-compatible endpoint (Ollama/LM Studio/Opencode/vLLM) keyless. The "ollama"
+    provider defaults to the local Ollama endpoint (override with MAS_OLLAMA_BASE_URL), so
+    local runs report provider "ollama" instead of masquerading as "openai"."""
 
-    def __init__(self, name: str = "openai"):
+    def __init__(
+        self,
+        name: str = "openai",
+        *,
+        base_url_env: str = "MAS_OPENAI_BASE_URL",
+        default_base_url: str = "",
+    ):
         self.name = name
+        self.base_url_env = base_url_env
+        self.default_base_url = default_base_url
 
     def init_client(self):
-        base_url = _resolve_base_url()
+        base_url = (os.getenv(self.base_url_env) or "").strip() or self.default_base_url
         key = os.getenv("OPENAI_API_KEY")
         if not key and base_url:
             key = "sk-local"  # local servers don't need a real key
@@ -385,6 +395,13 @@ class _LiteLLMAdapter(ProviderAdapter):
 register_adapter(_AnthropicAdapter())
 register_adapter(_OpenAIAdapter("openai"))
 register_adapter(_OpenAIAdapter("azure"))
+register_adapter(
+    _OpenAIAdapter(
+        "ollama",
+        base_url_env="MAS_OLLAMA_BASE_URL",
+        default_base_url="http://localhost:11434/v1",
+    )
+)
 register_adapter(_LiteLLMAdapter())
 
 

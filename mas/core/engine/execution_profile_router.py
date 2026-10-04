@@ -294,9 +294,10 @@ class ExecutionProfileRouter:
             or ("manual" if surface_name == "generic" else surface_name)
         )
         reasoning_effort = profile_target.get("reasoning_effort") if profile_target else None
+        launch_template = list(profile_target.get("launch_args", []) if profile_target else [])
         launch_args = [
             str(value).format(provider=provider, model=model, profile=profile)
-            for value in (profile_target.get("launch_args", []) if profile_target else [])
+            for value in launch_template
         ]
         if surface_name == "opencode":
             surface_provider = (
@@ -358,6 +359,13 @@ class ExecutionProfileRouter:
             if surface_name == "opencode":
                 selector = model if "/" in model else f"{provider}/{model}"
                 launch_args = ["-m", selector]
+            elif launch_template:
+                # Re-render for the selected fallback; otherwise the client would be
+                # launched with the primary model that was just rejected.
+                launch_args = [
+                    str(value).format(provider=provider, model=model, profile=profile)
+                    for value in launch_template
+                ]
         selection_status = (
             "selected_primary" if selected_index == 0 else "selected_fallback"
         )
@@ -742,8 +750,8 @@ class ExecutionProfileRouter:
 
     def _legacy_model(self, agent_id: str) -> str:
         if agent_id == "master_orchestrator":
-            return str(os.getenv("MAS_MASTER_MODEL") or self.llm.get("master_model", "claude-fable-5"))
-        return str(os.getenv("MAS_DEFAULT_MODEL") or self.llm.get("default_model", "claude-sonnet-5"))
+            return str(os.getenv("MAS_MASTER_MODEL") or self.llm.get("master_model", "claude-opus-5-5"))
+        return str(os.getenv("MAS_DEFAULT_MODEL") or self.llm.get("default_model", "claude-sonnet-5-5"))
 
     def _profile_for_model(self, model: str | None) -> ExecutionProfile | None:
         if not model:

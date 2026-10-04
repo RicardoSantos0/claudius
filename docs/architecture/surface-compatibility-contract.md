@@ -29,7 +29,7 @@ private formats as a second MAS data path.
 |---|---|---|
 | CLI | Direct `mas` commands | Canonical operator and scripting interface |
 | MCP clients | `mas-server` | Preferred tool-native transport |
-| Claude Code | MCP, installed agents/skills/commands, or manual loop | Apply the envelope model at invocation; planning is Fable-first with approved Opus fallback; return a receipt |
+| Claude Code | MCP, installed agents/skills/commands, or manual loop | Apply the envelope model at invocation; planning is Opus 5.5 first with an approved Fable 5.1 backup; return a receipt |
 | Codex | `mas-governance` plugin over `mas-server` | Apply OpenAI model/reasoning hints and report the actual model |
 | OpenCode | MCP or manual loop | Apply inherited catalog and `-m provider/model`, then return the route |
 | Copilot / ChatGPT | MCP where available or manual loop | Advisory unless the host can select/report a model; never claim enforcement without evidence |

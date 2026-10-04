@@ -44,18 +44,18 @@ Manual clients separate route selection, application, receipt, and verification:
 # Use --surface codex|copilot|opencode|local as applicable.
 mas prompt {project_id} {agent_id} --surface claude --json
 
-# Select the approved Opus fallback when Fable is unavailable/not in the plan.
+# Select the approved Fable backup when Opus is unavailable/not in the plan.
 mas prompt {project_id} {agent_id} --surface claude \
-  --exclude-model claude-fable-5 --json
+  --exclude-model claude-opus-5-5 --json
 
 mas ingest {project_id} --agent {agent_id} \
   --dispatch-id {dispatch_id} --reported-provider {provider} \
   --reported-model {actual_model} --verification-source client < response.txt
 ```
 
-Planning roles retain `reasoning`. In the Anthropic catalog that is Fable first
-and Opus 5 only for declared unavailability/refusal; in the OpenAI catalog it is
-GPT-6 Astra first and GPT-5.6 Sol on the same terms. Never switch for rate
+Planning roles retain `reasoning`. In the Anthropic catalog that is Opus 5.5 first
+and Fable 5.1 only for declared unavailability/refusal; in the OpenAI catalog it is
+GPT-6 Astra first and GPT-6.1 Sol on the same terms. Never switch for rate
 limits or generic errors, and never call a manual selection enforced without
 execution evidence.
 
