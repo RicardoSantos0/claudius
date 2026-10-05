@@ -4,10 +4,13 @@ Populates mas_agents, mas_skills, mas_commands, mas_templates, mas_domains,
 mas_codebase, and mas_policies from the current filesystem state. Idempotent — safe to re-run.
 """
 import json
+import re
 import sqlite3
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 
 # Roots resolved centrally so seeding works from a clone or an installed workspace.
 # DB_PATH -> <mas>/data/episodic.db ; ROOT -> repo root (holds agents/, skills/).
@@ -124,6 +127,59 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
     return data, body
 
 
+# A frontmatter block runs from an opening "---" line at the very start of the file to the
+# next line that is exactly "---". Matching whole lines matters, because a "---" inside a
+# value is not a delimiter.
+_FRONTMATTER_BLOCK = re.compile(
+    r"\A﻿?---[ \t]*\r?\n(.*?)^---[ \t]*\r?(?:\n|\Z)",
+    re.DOTALL | re.MULTILINE,
+)
+
+
+def split_frontmatter(text: str) -> tuple[str | None, str]:
+    """Return (frontmatter block, body), or (None, text) when the file has no block."""
+    match = _FRONTMATTER_BLOCK.match(text)
+    if not match:
+        return None, text
+    return match.group(1), text[match.end():]
+
+
+def load_frontmatter(text: str) -> dict | None:
+    """Parse the frontmatter block as YAML and return its top-level mapping.
+
+    Returns None when there is no block, when it is not valid YAML, or when it is not a
+    mapping. The line-by-line reader above takes a "name:" from any depth and stores a
+    folded scalar as its bare ">" indicator, which put "Steal Web Session Cookie" (a
+    nested list item) in place of configuring-oauth2-authorization-flow's name and ">"
+    in place of negentropy-lens's description, so skill rows are read with this instead.
+    """
+    block, _body = split_frontmatter(text)
+    if block is None:
+        return None
+    try:
+        # libyaml's safe loader when it is installed: the catalogue parses every skill's
+        # frontmatter, and the pure-Python loader takes about eight times as long.
+        data = yaml.load(block, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+    except yaml.YAMLError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def skill_identity(meta: dict | None, folder: str) -> tuple[str, str]:
+    """A skill's name and description from its top-level frontmatter keys only.
+
+    The name falls back to the folder name when the key is missing, empty or not a
+    string, and the description falls back to "". Both are stripped, so a folded
+    block scalar does not keep the newline YAML adds after it.
+    """
+    meta = meta or {}
+    raw_name = meta.get("name")
+    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else folder
+    raw_description = meta.get("description")
+    description = raw_description.strip() if isinstance(raw_description, str) else ""
+    return name, description
+
+
 def _get_connection(db_path: Path) -> sqlite3.Connection:
     # Reuse the closing-connection factory so `with _get_connection(...)` blocks
     # close the connection on exit (plain sqlite3 only commits) — avoids the
@@ -198,10 +254,19 @@ def _seed_skills(conn: sqlite3.Connection, root: Path) -> int:
             continue
         try:
             text = skill_md.read_text(encoding="utf-8")
-            fm, _ = _parse_frontmatter(text)
-            name = fm.get("name") or skill_id
-            description = fm.get("description", "")
-            trigger_pattern = fm.get("triggers") or fm.get("trigger_pattern") or fm.get("trigger", "")
+            fm = load_frontmatter(text)
+            if fm is None and split_frontmatter(text)[0] is not None:
+                warnings.warn(
+                    f"registry_seed: {skill_id}/SKILL.md frontmatter is not a YAML "
+                    "mapping; seeding the folder name and no description"
+                )
+            name, description = skill_identity(fm, skill_id)
+            fm = fm or {}
+            trigger_raw = (fm.get("triggers") or fm.get("trigger_pattern")
+                           or fm.get("trigger") or "")
+            # YAML may give a list or a mapping, which sqlite cannot bind as TEXT.
+            trigger_pattern = (trigger_raw if isinstance(trigger_raw, str)
+                               else json.dumps(trigger_raw, default=str))
             skill_path = f"skills/{skill_id}/SKILL.md"
             conn.execute(
                 """INSERT OR REPLACE INTO mas_skills

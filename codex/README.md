@@ -1,27 +1,34 @@
-# Codex surface — `mas-governance` plugin
+# Codex surface: `mas-governance` plugin
 
 This directory is a **local Codex marketplace** that makes OpenAI **Codex CLI** a first-class
-surface over the `claudius` MAS core — the "one provider-agnostic core, many surfaces" model.
-It exposes the **60-tool `mas-server` MCP** plus the `mas-*` operator skills inside Codex, the same
-governed engine Claude Code reaches.
+surface over the `claudius` MAS core, following the "one provider-agnostic core, many surfaces"
+model. It exposes the **66-tool `mas-server` MCP** inside Codex, the same governed engine Claude
+Code reaches. The plugin bundles no skills; see [Skills](#skills).
 
 ```
 codex/
 ├── .agents/plugins/marketplace.json     # marketplace index (one plugin: mas-governance)
 └── plugins/mas-governance/
-    ├── .codex-plugin/plugin.json        # plugin manifest
-    ├── .mcp.json                        # launches the claudius mas-server (stdio)
-    └── skills/                          # mas-clarify, mas-document, mas-examine, mas-handoff,
-                                         # mas-logwork, mas-plan, mas-postmortem, mas-review
+    ├── .codex-plugin/plugin.json        # plugin manifest (no skills key)
+    └── .mcp.json                        # launches the claudius mas-server (stdio)
 ```
 
-The `.mcp.json` here is **portable** — it runs `uv run --extra server mas-server` from this
+The `.mcp.json` here is **portable**: it runs `uv run --extra server mas-server` from this
 checkout. For a setup that works regardless of Codex's working directory, pin the project path:
 
 ```jsonc
 "command": "uv",
 "args": ["run", "--project", "/abs/path/to/claudius", "--extra", "server", "mas-server"]
 ```
+
+## Skills
+
+Codex gets every skill through a link, never through this plugin. Codex reads skills from
+`$CODEX_HOME/skills`, which is `~/.codex/skills` unless `CODEX_HOME` is set.
+`scripts/link_skill_surfaces.py`, which setup runs, links each skill in `skills/` into
+`~/.codex/skills`, so Codex reads the canonical files and an edit to `skills/` reaches Codex
+without a regeneration step. Up to plugin 0.2.0 the plugin carried copies of the eight
+`mas-*` skills instead; copies drift from the canonical files, so they were removed.
 
 ## Register with Codex
 

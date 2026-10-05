@@ -16,6 +16,27 @@ def _find_repo_root() -> Path:
     return repo_root()
 
 
+# How an agent on a runtime with no skill loader asks for a skill. ResponseParser takes
+# the last fenced code block of a response that holds a JSON object as its wire block,
+# and reads "skill_request" (or its short form "sk_req") from it: an object naming the
+# skill in "name" (or "skill"), with an optional "query".
+# OrchestrationLoop._handle_skill_request then authorizes the request, audits it, and
+# carries the skill's text into the next step's prompt under Grounded Context. The loop
+# skips the decisions, handoffs and phase changes of a response that carries one. That
+# promise holds for the master and for a single sub-agent only: a consultation is one
+# exchange whose answer is never read for a skill_request, and parallel sub-agents share
+# one pending slot. The prompt assembler gives those prompts another sentence instead.
+SKILL_REQUEST_FIELD = '"skill_request": {"name": "<skill>", "query": "<what you need it for>"}'
+SKILL_REQUEST_HINT = (
+    "To use an authorized skill whose text is not in this prompt, end your response "
+    "with your wire block, a JSON object in a ```json fence, carrying "
+    f"`{SKILL_REQUEST_FIELD}`. Its text then arrives "
+    "on your next step, under Grounded Context. MAS does not act on the decisions, "
+    "handoffs or phase changes in a response that carries a skill_request, so send the "
+    "request on its own and answer on the next step."
+)
+
+
 @dataclass(frozen=True)
 class SkillRecommendation:
     rule_id: str
@@ -72,16 +93,57 @@ class SkillTriggerPolicy:
             )
         return [rec for rec in recommendations if rec.skill]
 
-    def render_block(self, recommendations: list[SkillRecommendation], project_id: str) -> str:
+    @staticmethod
+    def render_block(
+        recommendations: list[SkillRecommendation],
+        project_id: str,
+        *,
+        inline: bool = False,
+        inlined: list[str] | tuple[str, ...] | set[str] | None = None,
+        delivered: list[str] | tuple[str, ...] | set[str] | None = None,
+        request_note: str = SKILL_REQUEST_HINT,
+    ) -> str:
+        """Render recommendations as a prompt block.
+
+        ``inline`` is for a runtime with no skill loader (the AgentRunner API adapters):
+        the block then names each skill without a slash command, because that runtime
+        has none to run. The block says a skill's text is included only when the
+        prompt carries it: ``inlined`` names the skills under Inlined Skills, and
+        ``delivered`` the skills whose full text a skill_request brought in under
+        Grounded Context. ``request_note`` says how, or whether, the agent can ask for
+        any other skill; its default is the skill_request hint, and a caller whose
+        runtime answers no skill_request passes a sentence that says so.
+        """
         if not recommendations:
             return ""
+        included = set(inlined or ())
+        requested = set(delivered or ())
         lines = ["## Recommended Skill Use", "", "Before your next action, evaluate these triggers:"]
         for idx, rec in enumerate(recommendations, 1):
             label = "REQUIRED" if rec.required else "OPTIONAL"
-            lines.append(f"{idx}. {label}: `/{rec.skill} {project_id}`")
+            if inline:
+                if rec.skill in requested:
+                    where = " (text included under Grounded Context)"
+                elif rec.skill in included:
+                    where = " (text included under Inlined Skills)"
+                else:
+                    where = " (text not in this prompt)"
+                lines.append(f"{idx}. {label}: `{rec.skill}`{where}")
+            else:
+                lines.append(f"{idx}. {label}: `/{rec.skill} {project_id}`")
             lines.append(f"   Reason: {rec.reason}")
         lines.append("")
-        lines.append("If a REQUIRED skill applies, use it before producing a final decision.")
+        if inline:
+            if any(rec.required and rec.skill in included | requested
+                   for rec in recommendations):
+                lines.append(
+                    "Apply each REQUIRED skill whose text is included before producing "
+                    "a final decision."
+                )
+            if request_note:
+                lines.append(request_note)
+        else:
+            lines.append("If a REQUIRED skill applies, use it before producing a final decision.")
         lines.append("Record completed skills in `skill_used` / `sk_used`.")
         return "\n".join(lines)
 

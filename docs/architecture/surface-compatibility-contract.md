@@ -25,12 +25,44 @@ assist recall, but it is never authoritative. `mas close` synchronizes a shared
 `PROJECT_SUMMARY.md` into the SQL event ledger; it does not write provider
 private formats as a second MAS data path.
 
+## Skills reach every surface through links
+
+`skills/` holds the only copy of every skill, so each surface gets a pointer to
+it and never a copy of its own: a copy drifts from the canonical skill and then
+shadows it. `scripts/link_skill_surfaces.py` writes the pointers, `setup.ps1` and
+`setup.sh` run it, and `--check` reports drift without writing.
+
+| Surface | Pointer | Where the installed client looks |
+|---|---|---|
+| Claude Code | one link per skill in `~/.claude/skills/` | `~/.claude/skills` |
+| opencode | none needed | reads `~/.claude/skills` |
+| VS Code Copilot | none needed | reads `~/.claude/skills` and `~/.copilot/skills`, keeping the first skill of each name |
+| Copilot CLI | one link per skill in `~/.copilot/skills/` | `~/.copilot/skills` and `~/.agents/skills`, not `~/.claude/skills` |
+| Codex | one link per skill in `~/.codex/skills/` | `$CODEX_HOME/skills` |
+| Antigravity | an absolute path to `skills/` in `~/.gemini/config/skills.json` | the manifest, which rejects a `~/` path |
+
+Map a new surface from the installed client rather than its documentation, then
+confirm what the model actually sees. Clients drop a skill without a warning
+when its frontmatter breaks their parser, so `scripts/validate_skills.py`
+refuses a `name`, `description` or `argument-hint` that is not a string.
+
+A runtime with no skill loader of its own gets the text from MAS instead. An API
+run through `agent_runner` receives the text of each REQUIRED skill its agent is
+authorized for, bounded per skill and in total, and on the main dispatch the
+agent can ask for any other authorized skill with
+`"skill_request": {"name": "<skill>", "query": "<why>"}` in its wire block; the
+text arrives on its next step. An MCP client without a loader calls `mas_skill`,
+which lists an agent's authorized skills or, given a skill and an exact project
+id, returns the skill's text and folder after authorization and an audit.
+
+## Supported surfaces
+
 | Surface | Expected path | Compatibility rule |
 |---|---|---|
 | CLI | Direct `mas` commands | Canonical operator and scripting interface |
 | MCP clients | `mas-server` | Preferred tool-native transport |
-| Claude Code | MCP, installed agents/skills/commands, or manual loop | Apply the envelope model at invocation; planning is Opus 5.5 first with an approved Fable 5.1 backup; return a receipt |
-| Codex | `mas-governance` plugin over `mas-server` | Apply OpenAI model/reasoning hints and report the actual model |
+| Claude Code | MCP, installed agents and commands, per-skill links, or manual loop | Apply the envelope model at invocation; planning is Opus 5.5 first with an approved Fable 5.1 backup; return a receipt |
+| Codex | `mas-governance` plugin over `mas-server`, skills through links | Apply OpenAI model/reasoning hints and report the actual model |
 | OpenCode | MCP or manual loop | Apply inherited catalog and `-m provider/model`, then return the route |
 | Copilot / ChatGPT | MCP where available or manual loop | Advisory unless the host can select/report a model; never claim enforcement without evidence |
 | Local model host | MCP or manual loop | Supply an explicit provider/model pair or local catalog; the local surface fails closed instead of inheriting a cloud route |

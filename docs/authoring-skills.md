@@ -19,6 +19,10 @@ Body: trigger, inputs, behaviour.
 ```
 
 Required frontmatter fields checked by the validator: `name` and `description`.
+Quote any value that starts with `[`: an unquoted `argument-hint: [topic]` parses
+as a YAML list, which Claude Code accepts but the Copilot CLI drops without a
+warning, so the validator refuses a `name`, `description` or `argument-hint`
+that is not a string.
 A skill may include any supporting files alongside `SKILL.md`.
 
 ## 2. Register the skill

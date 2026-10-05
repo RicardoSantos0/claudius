@@ -1,4 +1,5 @@
-# Links ~/.claude/agents, ~/.claude/commands, and ~/.claude/skills to this repo.
+# Links ~/.claude/agents, ~/.claude/commands and ~/.claude/standards to this repo,
+# and points every installed client at skills/ (scripts/link_skill_surfaces.py).
 # Run once per machine after cloning (as Administrator for symlinks).
 
 $RepoDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -35,8 +36,20 @@ function Link-Dir($name) {
 
 Link-Dir "agents"
 Link-Dir "commands"
-Link-Dir "skills"
 Link-Dir "standards"
+
+# --- Skills: point every installed client at skills/, never copy it ---
+# One junction per skill in ~/.claude/skills, ~/.copilot/skills and
+# ~/.codex/skills, plus a skills.json entry for Antigravity; opencode and VS Code
+# Copilot read the Claude folder. See scripts/link_skill_surfaces.py for why.
+$pythonCmd = Get-Command python -ErrorAction SilentlyContinue
+if ($pythonCmd) {
+  Write-Host "----------------------------------------"
+  & $pythonCmd.Source "$RepoDir\scripts\link_skill_surfaces.py" --repo-root $RepoDir
+  if ($LASTEXITCODE -ne 0) { Write-Host "Skill linking reported problems; see the lines above." -ForegroundColor Red; $failed++ }
+} else {
+  Write-Host "Skipping skill links: python not on PATH (run scripts/link_skill_surfaces.py later)"
+}
 
 Write-Host "----------------------------------------"
 Write-Host "Done: $linked linked, $failed failed."

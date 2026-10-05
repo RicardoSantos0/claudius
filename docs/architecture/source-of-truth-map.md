@@ -9,7 +9,7 @@ runtime state.
 |---|---|---|
 | `mas/core/` | Provider-neutral MAS engine | Governance, orchestration, prompt assembly, and persistence live here; never fork them per client. |
 | `mas/policies/`, `mas/foundation/`, `mas/templates/` | Governance and schema contracts | Treat these as framework source. |
-| `agents/`, `skills/`, `mas/roster/` | Agent, workflow, and capability definitions | Runtime registry tables are projections of these sources. |
+| `agents/`, `skills/`, `mas/roster/` | Agent, workflow, and capability definitions | Runtime registry tables are projections of these sources. `skills/` is the only copy of each skill; clients read it through links from `scripts/link_skill_surfaces.py`. |
 | `AGENTS.md`, `mas/AGENTS.md` | Cross-provider operating instructions | These are the only content-bearing instruction files. |
 
 ## Provider projections
@@ -19,7 +19,7 @@ runtime state.
 | `CLAUDE.md`, `mas/CLAUDE.md` | Claude Code | Import-only shims for the nearest `AGENTS.md`. |
 | `.github/copilot-instructions.md` | GitHub Copilot | Bootstrap-only pointer to the canonical instruction files. |
 | `.codex/config.toml` | Codex | Ensures the full root and nested instruction chain fits its project byte budget. |
-| `codex/plugins/mas-governance/` | Codex | Thin plugin over the same `mas-server`; no separate governance or memory store. |
+| `codex/plugins/mas-governance/` | Codex | Thin plugin over the same `mas-server`; it bundles no skills and keeps no separate governance or memory store. |
 
 ## Runtime state
 

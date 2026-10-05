@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Links ~/.claude/agents, ~/.claude/commands, and ~/.claude/skills to this repo.
+# Links ~/.claude/agents, ~/.claude/commands and ~/.claude/standards to this repo,
+# and points every installed client at skills/ (scripts/link_skill_surfaces.py).
 # Run once per machine after cloning.
 set -euo pipefail
 
@@ -35,8 +36,26 @@ link() {
 
 link agents
 link commands
-link skills
 link standards
+
+# --- Skills: point every installed client at skills/, never copy it ---
+# One link per skill in ~/.claude/skills, ~/.copilot/skills and ~/.codex/skills,
+# plus a skills.json entry for Antigravity; opencode and VS Code Copilot read the
+# Claude folder. See scripts/link_skill_surfaces.py for the paths and why.
+if command -v python3 >/dev/null 2>&1; then
+  PYTHON_BIN=python3
+elif command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=python
+else
+  PYTHON_BIN=""
+fi
+if [ -n "$PYTHON_BIN" ]; then
+  echo "----------------------------------------"
+  "$PYTHON_BIN" "$REPO_DIR/scripts/link_skill_surfaces.py" --repo-root "$REPO_DIR" \
+    || { echo "Skill linking reported problems; see the lines above." >&2; failed=$((failed + 1)); }
+else
+  echo "Skipping skill links: no python on PATH (run scripts/link_skill_surfaces.py later)"
+fi
 
 echo "----------------------------------------"
 echo "Done: $linked linked, $failed failed."

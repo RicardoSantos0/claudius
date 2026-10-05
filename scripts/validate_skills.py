@@ -108,6 +108,14 @@ def main() -> int:
                     errors.append(f"[FRONTMATTER_NO_NAME] {skill_dir.name}/SKILL.md: missing 'name' field")
                 if not fm.get("description"):
                     errors.append(f"[FRONTMATTER_NO_DESC] {skill_dir.name}/SKILL.md: missing 'description' field")
+                # An unquoted `argument-hint: [topic]` parses as a YAML list. Claude
+                # Code tolerates it, but the Copilot CLI drops the whole skill without
+                # a warning, so the skill silently disappears from one provider.
+                for key in ("name", "description", "argument-hint"):
+                    if key in fm and not isinstance(fm[key], str):
+                        errors.append(
+                            f"[FRONTMATTER_NOT_STRING] {skill_dir.name}/SKILL.md: '{key}' parses as "
+                            f"{type(fm[key]).__name__}, not a string; quote it")
     else:
         errors.append(f"[SKILLS_DIR_MISSING] skills/ directory not found at {skills_dir}")
 

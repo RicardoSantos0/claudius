@@ -10,11 +10,15 @@ import sys
 import argparse
 import json
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from core.utils.registry_seed import load_frontmatter, skill_identity, split_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +38,13 @@ from core.paths import mas_root
 ROOT = mas_root()  # mas/
 REPO_ROOT = ROOT.parent                    # repo root (holds skills/)
 SKILLS_DIR = REPO_ROOT / "skills"
+# Restore store for the third-party skills pinned in skills-lock.json. Setup links each
+# one into skills/, so a folder of skills/ may be a junction that resolves in here.
+SKILL_STORE_DIRNAME = Path(".agents") / "skills"
+# First line of a skill prompt that render_skill_prompt built from a readable SKILL.md.
+# Every refusal it returns starts with "[" instead, so the prompt assembler can tell a
+# delivered skill from a denial when the orchestration loop hands it on.
+SKILL_PROMPT_PREAMBLE = "You are executing the following skill."
 
 # Attribution decided in proj-YYYYMMDD-NNN-skill-attribution (lite MAS).
 # See mas/projects/proj-YYYYMMDD-NNN-skill-attribution/planning/product_plan.yaml
@@ -153,14 +164,47 @@ SKILL_ACCESS: dict[str, list[str]] = {
 }
 
 
+# One path segment that cannot climb out of its parent: it starts with a letter or digit
+# (so never "." or ".."), and has no separator, drive colon or whitespace. It never ends
+# in a dot either, because Windows drops a trailing dot and would open the folder the
+# name minus its dot names. Skill names and project ids both match it, and a
+# caller-supplied name is checked against it before the name can reach the filesystem
+# (IOP-22).
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?")
+
+
+def is_plain_name(value: str) -> bool:
+    """True when value is a bare folder name such as 'mas-plan' and never a path."""
+    return bool(_PLAIN_NAME.fullmatch(value or ""))
+
+
+def strip_frontmatter(text: str) -> str:
+    """Return a SKILL.md body without its leading YAML frontmatter block."""
+    block, body = split_frontmatter(text)
+    return text if block is None else body.lstrip()
+
+
 class SkillMetadata:
-    def __init__(self, name: str, description: str, path: Path):
+    """One catalogue entry.
+
+    ``key`` is the skill's folder name under skills/. It is the catalogue key, the name
+    SKILL_ACCESS grants and the name mas_skill loads by. ``name`` is the top-level
+    frontmatter name, which a few skills set to something else. ``installed`` is False
+    for a skill the mas_skills table lists but whose folder holds no SKILL.md that MAS
+    may read.
+    """
+
+    def __init__(self, name: str, description: str, path: Path, *,
+                 key: str | None = None, installed: bool = True):
         self.name = name
         self.description = description
         self.path = path
+        self.key = key or path.parent.name
+        self.installed = installed
 
     def to_dict(self) -> dict:
-        return {"name": self.name, "description": self.description, "path": str(self.path)}
+        return {"name": self.name, "key": self.key, "description": self.description,
+                "path": str(self.path)}
 
 
 class InvocationResult:
@@ -195,12 +239,19 @@ class InvocationResult:
 
 class SkillBridge:
     def __init__(self, skills_dir: Path = SKILLS_DIR,
-                 projects_root: Path | None = None):
+                 projects_root: Path | None = None, *,
+                 use_db: bool | None = None,
+                 store_dir: Path | None = None):
         self.skills_dir = skills_dir
         # Where per-project skill_audit_log.yaml files are written. Defaults to the
         # real mas/projects/ dir; tests inject a tmp_path so auditing never pollutes
         # the real projects tree (ip-rm-002).
         self.projects_root = projects_root or (ROOT / "projects")
+        # The mas_skills table describes the real skills/ only, so a bridge over another
+        # tree ignores it unless a caller (a test) asks for it.
+        self.use_db = (skills_dir == SKILLS_DIR) if use_db is None else use_db
+        # A folder of skills/ may be a junction into this store; nowhere else.
+        self.store_dir = store_dir or (skills_dir.parent / SKILL_STORE_DIRNAME)
         self._cache: dict[str, SkillMetadata] | None = None
 
     def _db_skills(self) -> list[dict]:
@@ -217,44 +268,141 @@ class SkillBridge:
         except Exception:
             return []
 
+    def _readable_roots(self) -> tuple[str, ...]:
+        """The two folders a readable SKILL.md may sit one folder below, resolved."""
+        roots = []
+        for root in (self.skills_dir, self.store_dir):
+            try:
+                roots.append(os.path.normcase(os.path.realpath(root)))
+            except (OSError, ValueError):
+                continue
+        return tuple(roots)
+
+    def _confined_skill_md(self, folder: str,
+                           roots: tuple[str, ...] | None = None) -> Path | None:
+        """skills/<folder>/SKILL.md when MAS may read it, otherwise None.
+
+        The folder must be a plain name, and the file must resolve to a SKILL.md
+        directly inside a folder of skills/ or of the restore store that third-party
+        skill junctions point into. A link that leads anywhere else is refused, so
+        nothing outside those two trees is ever read. The path returned is the one
+        inside skills/, never the resolved one, so its folder name stays the key.
+        """
+        if not is_plain_name(folder):
+            return None
+        path = self.skills_dir / folder / "SKILL.md"
+        try:
+            if not path.is_file():
+                return None
+            real = os.path.realpath(path)
+        except (OSError, ValueError):
+            return None
+        if os.path.normcase(os.path.basename(real)) != os.path.normcase("SKILL.md"):
+            return None
+        grandparent = os.path.normcase(os.path.dirname(os.path.dirname(real)))
+        if grandparent not in (roots if roots is not None else self._readable_roots()):
+            return None
+        return path
+
+    @staticmethod
+    def _db_row_folder(row: dict) -> str | None:
+        """The skills/ folder a mas_skills row names, or None when it names anything else.
+
+        Only "skills/<folder>/SKILL.md" is accepted. A row naming another path is
+        refused rather than corrected, and the file it names is never opened.
+        """
+        raw = str(row.get("skill_path") or "").replace("\\", "/")
+        if not raw:
+            skill_id = str(row.get("skill_id") or "")
+            return skill_id if is_plain_name(skill_id) else None
+        parts = raw.split("/")
+        if (len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
+                and is_plain_name(parts[1])):
+            return parts[1]
+        logger.debug("mas_skills row %r names %r, outside skills/<folder>/SKILL.md; ignored",
+                     row.get("skill_id"), raw)
+        return None
+
     def discover(self, force_refresh: bool = False) -> list[SkillMetadata]:
+        """The skill catalogue: every skill folder on disk plus every mas_skills row.
+
+        Keyed by folder name. A folder with a readable SKILL.md takes its name and
+        description from that file's top-level frontmatter, even when a mas_skills row
+        for the same folder says otherwise, because the row is a copy made by the last
+        seed. A row whose folder holds no readable SKILL.md is kept as not installed,
+        so the catalogue still lists it while nothing tries to read it.
+        """
         if self._cache is not None and not force_refresh:
             return list(self._cache.values())
 
         found: dict[str, SkillMetadata] = {}
-
-        db_rows = self._db_skills() if self.skills_dir == SKILLS_DIR else []
-        if db_rows:
-            for row in db_rows:
-                skill_path = REPO_ROOT / row["skill_path"]
-                name = row["name"] or row["skill_id"]
-                description = row.get("description") or ""
-                found[name] = SkillMetadata(name=name, description=description, path=skill_path)
-            self._cache = found
-            return list(found.values())
-
-        # Filesystem fallback
-        if not self.skills_dir.exists():
-            self._cache = {}
-            return []
-
-        for skill_dir in sorted(self.skills_dir.iterdir()):
-            if not skill_dir.is_dir():
+        roots = self._readable_roots()
+        try:
+            entries = sorted(self.skills_dir.iterdir(), key=lambda p: p.name)
+        except OSError:
+            entries = []
+        for entry in entries:
+            skill_md = self._confined_skill_md(entry.name, roots)
+            if skill_md is None:
                 continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            meta = self._parse_skill_md(skill_md)
-            if meta:
-                found[meta.name] = meta
+            try:
+                meta = load_frontmatter(skill_md.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError):
+                meta = None
+            name, description = skill_identity(meta, entry.name)
+            found[entry.name] = SkillMetadata(name, description, skill_md, key=entry.name)
 
-        self._cache = found
-        return list(found.values())
+        for row in self._db_skills() if self.use_db else []:
+            folder = self._db_row_folder(row)
+            if folder is None or folder in found:
+                continue
+            found[folder] = SkillMetadata(
+                name=str(row.get("name") or folder),
+                description=str(row.get("description") or ""),
+                path=self.skills_dir / folder / "SKILL.md",
+                key=folder,
+                installed=False,
+            )
+
+        self._cache = dict(sorted(found.items()))
+        return list(self._cache.values())
 
     def get_skill(self, skill_name: str) -> SkillMetadata | None:
+        """Look a skill up by folder name, or by the name its frontmatter declares.
+
+        The folder name always wins, so a skill that declares another skill's folder
+        name as its own cannot take that skill's place. A declared name that two skills
+        share resolves to neither.
+        """
         if self._cache is None:
             self.discover()
-        return self._cache.get(skill_name)  # type: ignore[union-attr]
+        catalogue = self._cache or {}
+        skill = catalogue.get(skill_name)
+        if skill is not None:
+            return skill
+        declared = [s for s in catalogue.values() if s.name == skill_name]
+        return declared[0] if len(declared) == 1 else None
+
+    def skill_in_folder(self, folder_name: str) -> SkillMetadata | None:
+        """The skill whose folder under skills/ is folder_name, if any."""
+        if self._cache is None:
+            self.discover()
+        return (self._cache or {}).get(folder_name)
+
+    def read_skill_text(self, skill: SkillMetadata) -> str:
+        """Read a catalogued skill's SKILL.md from skills/<key>/SKILL.md and nowhere else.
+
+        The path is rebuilt from the key and checked again at read time, so neither a
+        mas_skills row nor a link retargeted since discovery can point the read at
+        another file. Raises OSError when the skill has no SKILL.md that MAS may read.
+        """
+        path = self._confined_skill_md(skill.key)
+        if path is None:
+            raise FileNotFoundError(
+                f"Skill '{skill.key}' has no SKILL.md that MAS may read in "
+                f"{self.skills_dir / skill.key}."
+            )
+        return path.read_text(encoding="utf-8")
 
     def is_skill_authorized(self, agent_id: str, skill_name: str) -> bool:
         allowed = SKILL_ACCESS.get(agent_id)
@@ -271,7 +419,8 @@ class SkillBridge:
         allowed = SKILL_ACCESS[agent_id]
         if "*" in allowed:
             return all_skills
-        return [s for s in all_skills if s.name in allowed]
+        # SKILL_ACCESS grants folder names, so the folder key is what is compared.
+        return [s for s in all_skills if s.key in allowed]
 
     def invoke(
         self,
@@ -279,14 +428,31 @@ class SkillBridge:
         skill_name: str,
         query: str,
         project_id: str = "",
+        *,
+        delivery: str = "",
     ) -> InvocationResult:
+        """Authorize and audit one skill use.
+
+        ``delivery`` names how the skill text reached the agent when MAS delivered it
+        itself: "mas_skill" for the MCP tool, "inline" for text the assembler put in an
+        API-runtime prompt. It is stored on the audit entry so `mas skill-usage` can
+        tell those apart from a client's own skill command.
+
+        A skill named by its declared frontmatter name is authorized and audited under
+        its folder key, the name SKILL_ACCESS grants.
+        """
         timestamp = datetime.now(timezone.utc).isoformat()
         tokens_used = _tc.count(query) if _tc else 0
+
+        skill_meta = self.get_skill(skill_name)
+        if skill_meta is not None:
+            skill_name = skill_meta.key
 
         if not self.is_skill_authorized(agent_id, skill_name):
             audit = self._make_audit(
                 agent_id, skill_name, query, project_id,
                 outcome="denied", tokens_used=0, timestamp=timestamp,
+                delivery=delivery,
             )
             self._persist_invocation_event(project_id, audit, "skill_skipped",
                                            "Skill invocation denied")
@@ -300,20 +466,26 @@ class SkillBridge:
                 audit_entry=audit,
             )
 
-        skill_meta = self.get_skill(skill_name)
-        if skill_meta is None:
+        if skill_meta is None or not skill_meta.installed:
             audit = self._make_audit(
                 agent_id, skill_name, query, project_id,
                 outcome="skill_not_found", tokens_used=0, timestamp=timestamp,
+                delivery=delivery,
             )
             self._persist_invocation_event(project_id, audit, "skill_skipped",
                                            "Skill not found")
+            message = (
+                f"Skill '{skill_name}' not found in {self.skills_dir}."
+                if skill_meta is None else
+                f"Skill '{skill_name}' is in the catalogue but not installed: "
+                f"{self.skills_dir / skill_name} holds no SKILL.md that MAS may read."
+            )
             return InvocationResult(
                 success=False,
                 skill_name=skill_name,
                 agent_id=agent_id,
                 outcome="skill_not_found",
-                message=f"Skill '{skill_name}' not found in {self.skills_dir}.",
+                message=message,
                 tokens_used=0,
                 audit_entry=audit,
             )
@@ -321,9 +493,13 @@ class SkillBridge:
         audit = self._make_audit(
             agent_id, skill_name, query, project_id,
             outcome="ok", tokens_used=tokens_used, timestamp=timestamp,
+            delivery=delivery,
         )
-        self._persist_invocation_event(project_id, audit, "skill_invoked",
-                                       "Skill invocation authorized")
+        self._persist_invocation_event(
+            project_id, audit, "skill_invoked",
+            f"Skill text delivered ({delivery})" if delivery
+            else "Skill invocation authorized",
+        )
 
         return InvocationResult(
             success=True,
@@ -332,7 +508,8 @@ class SkillBridge:
             outcome="ok",
             message=(
                 f"Skill '{skill_name}' authorized for agent '{agent_id}'. "
-                f"Invoke via: /{skill_name} {query}"
+                + (f"Text delivered via {delivery}." if delivery
+                   else f"Invoke via: /{skill_name} {query}")
             ),
             tokens_used=tokens_used,
             audit_entry=audit,
@@ -363,29 +540,6 @@ class SkillBridge:
         with log_path.open("w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
-    def _parse_skill_md(self, path: Path) -> SkillMetadata | None:
-        try:
-            content = path.read_text(encoding="utf-8")
-        except OSError:
-            return None
-
-        if not content.startswith("---"):
-            return None
-
-        end = content.find("---", 3)
-        if end == -1:
-            return None
-
-        frontmatter = content[3:end].strip()
-        try:
-            meta = yaml.safe_load(frontmatter) or {}
-        except yaml.YAMLError:
-            return None
-
-        name = meta.get("name") or path.parent.name
-        description = meta.get("description", "")
-        return SkillMetadata(name=name, description=description, path=path)
-
     def _make_audit(
         self,
         agent_id: str,
@@ -395,8 +549,9 @@ class SkillBridge:
         outcome: str,
         tokens_used: int,
         timestamp: str,
+        delivery: str = "",
     ) -> dict:
-        return {
+        entry = {
             "timestamp": timestamp,
             "agent_id": agent_id,
             "skill_name": skill_name,
@@ -405,25 +560,30 @@ class SkillBridge:
             "outcome": outcome,
             "tokens_used": tokens_used,
         }
+        if delivery:
+            entry["delivery"] = delivery
+        return entry
 
     def render_skill_prompt(self, agent_id: str, skill_name: str, query: str,
                             project_id: str = "") -> str:
         """
         Render a skill invocation as an executable prompt block.
         Returns a markdown block the agent can act on, or an error string.
-        Never raises.
+        Never raises. When the SKILL.md cannot be read the result says so, rather than
+        standing the description in for the procedure.
         """
-        if not self.is_skill_authorized(agent_id, skill_name):
-            return f"[skill denied: {skill_name!r} not authorized for {agent_id!r}]"
         skill = self.get_skill(skill_name)
+        key = skill.key if skill is not None else skill_name
+        if not self.is_skill_authorized(agent_id, key):
+            return f"[skill denied: {key!r} not authorized for {agent_id!r}]"
         if skill is None:
             return f"[skill not found: {skill_name!r}]"
         try:
-            skill_text = skill.path.read_text(encoding="utf-8")
-        except OSError:
-            skill_text = f"# {skill.name}\n\n{skill.description}"
+            skill_text = self.read_skill_text(skill)
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"[skill unreadable: {key!r}: {exc}]"
         return (
-            "You are executing the following Claude Code skill.\n\n"
+            f"{SKILL_PROMPT_PREAMBLE}\n\n"
             f"# Skill\n{skill_text}\n\n"
             f"# Project\n{project_id or '(none)'}\n\n"
             f"# Query\n{query}\n\n"
@@ -521,7 +681,8 @@ def main() -> int:
             print("[info] No skills found.")
             return 0
         for s in skills:
-            print(f"  {s.name:<30} {s.description[:80]}")
+            flag = "" if s.installed else " [not installed]"
+            print(f"  {s.key:<30} {s.description[:80]}{flag}")
         print(f"\n{len(skills)} skill(s) found.")
     elif ns.command == "invoke":
         res = bridge.invoke(ns.agent, ns.skill, ns.query, ns.project_id)
@@ -529,7 +690,7 @@ def main() -> int:
     elif ns.command == "authorized":
         skills = bridge.authorized_skills(ns.agent)
         for s in skills:
-            print(f"  {s.name:<30} {s.description[:60]}")
+            print(f"  {s.key:<30} {s.description[:60]}")
     elif ns.command == "check":
         ok = bridge.is_skill_authorized(ns.agent, ns.skill)
         status = "AUTHORIZED" if ok else "DENIED"

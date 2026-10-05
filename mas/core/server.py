@@ -1211,6 +1211,131 @@ def mas_skill_recommendations(project_id: str, phase: str = "") -> str:
                       for r in recs], default_flow_style=False, allow_unicode=True)
 
 
+def _skill_bridge(projects_root=None):
+    """SkillBridge factory; a seam so tests can point mas_skill at a temporary tree."""
+    from core.engine.skill_bridge import SkillBridge
+    return SkillBridge(projects_root=projects_root)
+
+
+def _one_line(text: str, limit: int = 160) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 3].rstrip() + "..."
+
+
+def _on_disk_project_id(project_dir) -> str:
+    """The project folder's name exactly as the filesystem stores it, or "" if unknown.
+
+    A case-insensitive filesystem opens projects/PROJ-X for a project stored as
+    projects/proj-x, so a variant spelling passes exists(). Events and audit logs are
+    keyed by the exact id, and `mas doctor` and `mas skill-usage` match it exactly, so a
+    use recorded under a variant never reaches the project's own reports.
+    """
+    import os
+
+    try:
+        siblings = list(project_dir.parent.iterdir())
+    except OSError:
+        return ""
+    if any(child.name == project_dir.name for child in siblings):
+        return project_dir.name
+    for child in siblings:
+        try:
+            if child.is_dir() and os.path.samefile(child, project_dir):
+                return child.name
+        except OSError:
+            continue
+    return ""
+
+
+@mcp.tool()
+def mas_skill(agent_id: str, skill_name: str = "", query: str = "", project_id: str = "") -> str:
+    """Load an authorized skill's text, for a client that has no skill loader of its own.
+
+    With no skill_name, lists the skills agent_id is authorized for, one line each, and
+    needs no project. Loading a skill needs project_id, the exact id of an existing
+    project, because SkillBridge authorizes the call and audits it, granted or denied,
+    in that project's skill audit log and event stream. Only an authorized, installed
+    skill returns its SKILL.md text and the absolute path of its folder, so a client
+    that can read files can open the references/ and scripts/ files the skill names. A
+    denial or an unknown skill returns the reason and never the text.
+    """
+    import os
+
+    from core.engine.agent_ids import normalize_agent_id
+    from core.engine.skill_bridge import is_plain_name
+
+    aid = normalize_agent_id(agent_id) or agent_id
+    name = (skill_name or "").strip()
+    pid = (project_id or "").strip()
+    # Both names are checked before anything touches the filesystem. A skill name is
+    # only ever a catalogue key, and a project id becomes the audit log's folder, so
+    # neither may carry a separator, a drive, a leading dot or a trailing dot.
+    if name and not is_plain_name(name):
+        return ("[error] skill_name must be a plain skill folder name such as "
+                "'mas-plan', with no path separator, drive, leading dot or trailing dot.")
+    # SkillBridge records nothing for a call with no project, so a load without one
+    # would hand out skill text, or probe authorization, with no trace. Listing reads
+    # only the access table and the catalogue, so it stays open.
+    if name and not pid:
+        return ("[error] project_id is required to load a skill, because each load is "
+                "audited in that project's skill log. Call mas_skill(agent_id) with no "
+                "skill_name to list the authorized skills without a project.")
+    audit_root = None
+    if pid:
+        if not is_plain_name(pid):
+            return "[error] project_id must be a plain project id, not a path."
+        sm = _get_sm(pid)
+        if not sm.exists():
+            return f"Error: Project '{pid}' not found."
+        # A variant spelling that the filesystem resolves to a real project would file
+        # the audit where `mas doctor` never looks, so only the exact id is accepted.
+        stored = _on_disk_project_id(sm.project_dir)
+        if stored != pid:
+            hint = f" Its folder is named '{stored}'; pass that id exactly." if stored else ""
+            return (f"[error] project_id '{pid}' is not the project's exact id, so the use "
+                    f"would be audited under a name its reports never read.{hint}")
+        # Audit beside the project's own state, whether its folder is flat or nested.
+        audit_root = sm.project_dir.parent
+
+    bridge = _skill_bridge(audit_root)
+    if not name:
+        # Listed by folder name, the catalogue key this tool loads by. The declared name
+        # follows only where a skill's frontmatter sets a different one.
+        skills = sorted(bridge.authorized_skills(aid), key=lambda s: s.key)
+        if not skills:
+            return f"Agent '{aid}' has no authorized skills."
+        lines = [f"Skills authorized for {aid} ({len(skills)}):"]
+        for s in skills:
+            label = s.key if s.name == s.key else f"{s.key} ({s.name})"
+            if not s.installed:
+                label += " [not installed]"
+            lines.append(f"- {label}: {_one_line(s.description)}")
+        lines.append("Load one with mas_skill(agent_id, skill_name, project_id=...).")
+        return "\n".join(lines)
+
+    # The bridge resolves a folder name or a declared name to the folder key, and
+    # authorizes and audits under that key, the name SKILL_ACCESS grants.
+    result = bridge.invoke(aid, name, query, project_id=pid, delivery="mas_skill")
+    if not result.success:
+        return f"[{result.outcome}] {result.message}"
+    skill = bridge.get_skill(result.skill_name)
+    try:
+        # Read only from skills/<key>/SKILL.md, checked again at read time.
+        text = bridge.read_skill_text(skill)
+    except (AttributeError, OSError, UnicodeDecodeError) as exc:
+        return f"[error] Skill '{name}' is authorized but its SKILL.md could not be read: {exc}"
+    folder = os.path.abspath(str(skill.path.parent))
+    header = [
+        f"# Skill: {skill.key}",
+        f"Agent: {aid}",
+        f"Folder: {folder}",
+        "Files the skill names under references/ or scripts/ are in that folder.",
+    ]
+    if query:
+        header.append(f"Query: {query}")
+    return "\n".join(header) + "\n\n" + text
+
+
 @mcp.tool()
 def mas_consultation_required(project_id: str) -> str:
     """Return the consultation requirements triggered by a project's current state. Returns YAML list."""

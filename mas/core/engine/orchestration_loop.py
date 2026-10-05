@@ -123,6 +123,8 @@ class OrchestrationLoop:
         self._pending_deployment_plan: list[dict] = []   # set when HR returns a deploy plan
         self._agent_error_counts: dict[str, int] = {}
         self._recorded_skill_recommendations: set[tuple[str, str, str]] = set()
+        # (agent_id, skill) pairs whose inlined text has been audited this run.
+        self._recorded_inline_skills: set[tuple[str, str]] = set()
         # Lazy-loaded helpers
         self._runner = None
         self._assembler = None
@@ -282,7 +284,11 @@ class OrchestrationLoop:
     def _dispatch_agent(self, agent_id: str, state: dict) -> "_AgentResponse":
         from core.engine.agent_runner import AgentRunner
         from core.engine.execution_profile_router import ExecutionProfileRouter
-        from core.engine.prompt_assembler import PromptAssembler
+        from core.engine.prompt_assembler import (
+            SKILL_DELIVERY_INLINE,
+            SKILL_DELIVERY_KEY,
+            PromptAssembler,
+        )
 
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
 
@@ -290,15 +296,17 @@ class OrchestrationLoop:
             self._assembler = PromptAssembler(agents_dir=ROOT / "agents")
 
         phase = state.get("core_identity", {}).get("current_phase", "intake")
-        extra_ctx = self._build_extra_context()
+        # This prompt goes to an AgentRunner API adapter, which makes no tool calls, so
+        # the agent cannot load a skill itself: the assembler inlines the REQUIRED skills
+        # it is authorized for instead of naming a command (IOP-22).
+        extra_ctx = dict(self._build_extra_context() or {})
+        extra_ctx[SKILL_DELIVERY_KEY] = SKILL_DELIVERY_INLINE
         self._record_skill_recommendations(state, phase=phase)
 
         # Inject pending handoff task description for sub-agents
         if canonical_agent_id != "master_orchestrator":
             task_ctx = self._pending_handoff_context(canonical_agent_id, state)
             if task_ctx:
-                if extra_ctx is None:
-                    extra_ctx = {}
                 extra_ctx["pending_task"] = task_ctx
 
         prompt = self._assembler.assemble(canonical_agent_id, state,
@@ -419,6 +427,7 @@ class OrchestrationLoop:
             text = ""
         else:
             self._agent_error_counts.pop(canonical_agent_id, None)
+            self._record_inline_skill_delivery(canonical_agent_id, prompt_metadata)
 
         return _AgentResponse(agent_id=canonical_agent_id, raw_text=text, tokens_used=tokens)
 
@@ -592,6 +601,52 @@ class OrchestrationLoop:
                 self._recorded_skill_recommendations.add(key)
         except Exception as exc:
             logger.debug("orchestration loop step failed (non-blocking): %s", exc)
+
+    def _record_inline_skill_delivery(self, agent_id: str, prompt_metadata: Any) -> None:
+        """Audit REQUIRED skill text that reached a model inline, once per agent and skill.
+
+        For a runtime with no loader, inline text is what loading a skill means, so it
+        goes through SkillBridge.invoke and lands as a skill_invoked event marked
+        delivery=inline, which is the event `mas doctor` counts against REQUIRED
+        recommendations. The caller records it only after the provider call returned
+        without error: an assembled prompt that never reached a model delivered nothing.
+        """
+        agent_id = normalize_agent_id(agent_id) or agent_id
+        delivery = (
+            prompt_metadata.get("skill_delivery")
+            if isinstance(prompt_metadata, dict) else None
+        )
+        # The record names the agent it was assembled for. Parallel dispatch shares one
+        # assembler, so a record for another agent is skipped rather than misattributed.
+        if not isinstance(delivery, dict) or delivery.get("agent_id") != agent_id:
+            return
+        pending = [
+            str(item["skill"])
+            for item in delivery.get("inlined", [])
+            if isinstance(item, dict) and item.get("skill")
+            and (agent_id, str(item["skill"])) not in self._recorded_inline_skills
+        ]
+        if not pending:
+            return
+        try:
+            from core.engine.shared_state_manager import SharedStateManager
+            from core.engine.skill_bridge import SkillBridge
+            sm = SharedStateManager(self.config.project_id)
+            if not sm.exists():
+                return
+            # Audit beside the project's own state, whether its folder is flat or nested.
+            bridge = SkillBridge(projects_root=sm.project_dir.parent)
+            for skill in pending:
+                bridge.invoke(
+                    agent_id,
+                    skill,
+                    "inline delivery",
+                    project_id=self.config.project_id,
+                    delivery="inline",
+                )
+                self._recorded_inline_skills.add((agent_id, skill))
+        except Exception as exc:
+            logger.debug("inline skill audit failed (non-blocking): %s", exc)
 
     def _determine_pending_agents(self, state: dict) -> list[str]:
         """
@@ -896,7 +951,11 @@ class OrchestrationLoop:
         from core.engine.consultation_engine import ConsultationEngine
         from core.engine.agent_runner import AgentRunner
         from core.engine.execution_profile_router import ExecutionProfileRouter
-        from core.engine.prompt_assembler import PromptAssembler
+        from core.engine.prompt_assembler import (
+            SKILL_DELIVERY_INLINE,
+            SKILL_DELIVERY_KEY,
+            PromptAssembler,
+        )
         from core.engine.shared_state_manager import SharedStateManager
 
         sm = SharedStateManager(self.config.project_id)
@@ -949,10 +1008,13 @@ class OrchestrationLoop:
                 "injected_consultation_question": request.question,
                 "injected_consultation_context": yaml.dump(
                     trigger.get("context", {}), default_flow_style=False),
+                # Consultants also run through an AgentRunner API adapter (IOP-22).
+                SKILL_DELIVERY_KEY: SKILL_DELIVERY_INLINE,
             }
             if consultant_id == "domain_expert":
                 extra["injected_domain_context"] = request.domain_context
             prompt = assembler.assemble(consultant_id, state, extra_context=extra)
+            consult_metadata = getattr(assembler, "last_prompt_metadata", {})
             router = ExecutionProfileRouter()
             selection = router.resolve(
                 consultant_id,
@@ -978,6 +1040,8 @@ class OrchestrationLoop:
             )
             result = runner.run(consultant_id, prompt,
                                 project_id=self.config.project_id)
+            if not result.get("error"):
+                self._record_inline_skill_delivery(consultant_id, consult_metadata)
 
             c_text = result.get("text", "")
             c_parsed = self._parse_consultant_response(c_text)

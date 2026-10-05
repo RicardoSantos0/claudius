@@ -2302,7 +2302,11 @@ def skill_usage(project_id: str):
         actor = str(row.get("agent_id", "—"))[:23]
         action_type = str(row.get("action_type", "—"))[:19]
         skill = str(payload.get("skill") or payload.get("skill_name") or payload.get("name") or "—")[:21]
-        detail = str(payload.get("outcome") or payload.get("reason") or row.get("intent") or "")[:55]
+        detail = str(payload.get("outcome") or payload.get("reason") or row.get("intent") or "")
+        # Show how MAS delivered the text ("inline", "mas_skill"), when it did (IOP-22).
+        if payload.get("delivery"):
+            detail = f"{detail} ({payload['delivery']})"
+        detail = detail[:55]
         click.echo(f"{ts:<20} {actor:<24} {action_type:<20} {skill:<22} {detail}")
 
 

@@ -8,6 +8,12 @@ Each skill lives in its own folder with a `SKILL.md` (the instructions Claude lo
 when the skill runs). Add new ones with [`skill-builder`](skill-builder/), and
 validate the set with `python scripts/validate_skills.py`.
 
+Every client reads these folders through links, never copies:
+`python scripts/link_skill_surfaces.py` (setup runs it) points Claude Code, Copilot,
+Codex, opencode and Antigravity here, and `--check` reports drift. See the
+[Surface Compatibility Contract](../docs/architecture/surface-compatibility-contract.md#skills-reach-every-surface-through-links)
+for each client's path.
+
 ## MAS workflow skills
 
 The core pack — a coherent set that maps onto the MAS project lifecycle.
