@@ -21,13 +21,13 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
-    "anthropic>=0.117.0",
+    "anthropic>=0.120.2",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
     "click>=8.4.2",
     # Security lower bounds for transitive HTTP/name handling packages.
     "idna>=3.15",
-    "urllib3>=2.7.0",
+    "urllib3>=2.8.0",
 ]
 
 [project.urls]
@@ -45,17 +45,17 @@ vector = [
     "pydantic-settings>=2.14.2",
 ]
 server = [
-    "mcp>=1.28.1",
+    "mcp>=1.28.1,<2.0.0",
 ]
 openai = [
-    "openai>=1.0",
+    "openai>=2.51.0",
 ]
 litellm = [
-    "litellm>=1.0",
+    "litellm>=1.94.1",
 ]
 providers = [
-    "openai>=1.0",
-    "litellm>=1.0",
+    "openai>=2.51.0",
+    "litellm>=1.94.1",
 ]
 
 [project.scripts]
