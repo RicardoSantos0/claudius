@@ -51,7 +51,8 @@ else
 fi
 if [ -n "$PYTHON_BIN" ]; then
   echo "----------------------------------------"
-  "$PYTHON_BIN" "$REPO_DIR/scripts/link_skill_surfaces.py" --repo-root "$REPO_DIR" \
+  # --home: on Windows Python reads USERPROFILE, not this shell's HOME.
+  "$PYTHON_BIN" "$REPO_DIR/scripts/link_skill_surfaces.py" --repo-root "$REPO_DIR" --home "$HOME" \
     || { echo "Skill linking reported problems; see the lines above." >&2; failed=$((failed + 1)); }
 else
   echo "Skipping skill links: no python on PATH (run scripts/link_skill_surfaces.py later)"

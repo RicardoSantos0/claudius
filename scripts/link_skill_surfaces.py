@@ -237,7 +237,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--check", action="store_true", help="report drift, write nothing")
     ap.add_argument("--only", action="append", choices=CLIENTS, help="limit to these clients")
     ap.add_argument("--repo-root", type=Path, default=Path(__file__).resolve().parents[1])
-    ap.add_argument("--home", type=Path, default=Path.home(), help=argparse.SUPPRESS)
+    ap.add_argument("--home", type=Path, default=Path.home(),
+                    help="home folder whose client folders get the links (default: yours)")
     ns = ap.parse_args(argv)
 
     repo, home, write = ns.repo_root, ns.home, not ns.check
