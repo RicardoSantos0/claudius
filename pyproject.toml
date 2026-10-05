@@ -51,11 +51,11 @@ openai = [
     "openai>=2.51.0",
 ]
 litellm = [
-    "litellm>=1.94.1",
+    "litellm>=1.94.3",
 ]
 providers = [
     "openai>=2.51.0",
-    "litellm>=1.94.1",
+    "litellm>=1.94.3",
 ]
 
 [project.scripts]
