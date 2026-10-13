@@ -89,8 +89,9 @@ provider-neutral stable-prefix fingerprint for adapter-level caching. See
 
 Apply the envelope model when invoking every manual agent, then return its
 `dispatch_id`, actual provider, and actual model through `mas ingest`. Planning
-roles use Opus 5.5 first on Claude and Fable 5.1 only when Opus is
-excluded/unavailable or refuses. A client/operator receipt is an attestation;
+roles use Opus 5.5 first on Claude and Opus 5 only when Opus 5.5 is
+excluded/unavailable or refuses; Fable runs only when asked for explicitly,
+because it draws on usage credits. A client/operator receipt is an attestation;
 selection alone is not execution proof. See
 `docs/architecture/model-routing.md`.
 

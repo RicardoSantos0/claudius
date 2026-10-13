@@ -61,7 +61,7 @@ id, returns the skill's text and folder after authorization and an audit.
 |---|---|---|
 | CLI | Direct `mas` commands | Canonical operator and scripting interface |
 | MCP clients | `mas-server` | Preferred tool-native transport |
-| Claude Code | MCP, installed agents and commands, per-skill links, or manual loop | Apply the envelope model at invocation; planning is Opus 5.5 first with an approved Fable 5.1 backup; return a receipt |
+| Claude Code | MCP, installed agents and commands, per-skill links, or manual loop | Apply the envelope model at invocation; planning is Opus 5.5 first with an approved Opus 5 fallback (Fable only on explicit request); return a receipt |
 | Codex | `mas-governance` plugin over `mas-server`, skills through links | Apply OpenAI model/reasoning hints and report the actual model |
 | OpenCode | MCP or manual loop | Apply inherited catalog and `-m provider/model`, then return the route |
 | Copilot / ChatGPT | MCP where available or manual loop | Advisory unless the host can select/report a model; never claim enforcement without evidence |
