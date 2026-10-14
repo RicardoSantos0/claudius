@@ -51,8 +51,14 @@ run through `agent_runner` receives the text of each REQUIRED skill its agent is
 authorized for, bounded per skill and in total, and on the main dispatch the
 agent can ask for any other authorized skill with
 `"skill_request": {"name": "<skill>", "query": "<why>"}` in its wire block; the
-text arrives on its next step. An MCP client without a loader calls `mas_skill`,
-which lists an agent's authorized skills or, given a skill and an exact project
+text arrives on its next step. A parallel sub-agent's request keeps its task
+open, and the text reaches that agent alone when MAS dispatches it again; a
+consultant gets one request per consultation, answered with a second turn. MAS
+answers at most three requests in a row from one agent. A consultant reply
+without a readable risk level and recommendation is recorded as unparsed, never
+as approval, and when such replies decide whether the panel is unanimous, the
+master's gated action waits for the master's own decision. An MCP client
+without a loader calls `mas_skill`, which lists an agent's authorized skills or, given a skill and an exact project
 id, returns the skill's text and folder after authorization and an audit.
 
 ## Supported surfaces

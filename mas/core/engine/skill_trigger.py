@@ -21,11 +21,11 @@ def _find_repo_root() -> Path:
 # and reads "skill_request" (or its short form "sk_req") from it: an object naming the
 # skill in "name" (or "skill"), with an optional "query".
 # OrchestrationLoop._handle_skill_request then authorizes the request, audits it, and
-# carries the skill's text into the next step's prompt under Grounded Context. The loop
-# skips the decisions, handoffs and phase changes of a response that carries one. That
-# promise holds for the master and for a single sub-agent only: a consultation is one
-# exchange whose answer is never read for a skill_request, and parallel sub-agents share
-# one pending slot. The prompt assembler gives those prompts another sentence instead.
+# carries the skill's text into the requesting agent's next prompt under Grounded
+# Context. The loop skips the decisions, handoffs and phase changes of a response that
+# carries one. This hint is the sentence for the master and a single sub-agent; the
+# prompt assembler words it for a parallel sub-agent and a consultant, whose requests are
+# answered differently, and says so when an agent has no request left.
 SKILL_REQUEST_FIELD = '"skill_request": {"name": "<skill>", "query": "<what you need it for>"}'
 SKILL_REQUEST_HINT = (
     "To use an authorized skill whose text is not in this prompt, end your response "
