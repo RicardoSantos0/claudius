@@ -293,7 +293,8 @@ class OrchestrationLoop:
     # ------------------------------------------------------------------
 
     def _dispatch_agent(self, agent_id: str, state: dict,
-                        kind: str | None = None) -> "_AgentResponse":
+                        kind: str | None = None,
+                        shared_grounded: str | None = None) -> "_AgentResponse":
         from core.engine.agent_runner import AgentRunner
         from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import (
@@ -317,7 +318,7 @@ class OrchestrationLoop:
         # the agent cannot load a skill itself: the assembler inlines the REQUIRED skills
         # it is authorized for instead of naming a command (IOP-22). The dispatch kind
         # and the requests left tell it what a skill_request leads to (IOP-27).
-        extra_ctx = dict(self._build_extra_context(canonical_agent_id) or {})
+        extra_ctx = dict(self._build_extra_context(canonical_agent_id, shared_grounded) or {})
         extra_ctx[SKILL_DELIVERY_KEY] = SKILL_DELIVERY_INLINE
         extra_ctx[DISPATCH_KIND_KEY] = kind or (
             DISPATCH_MAIN if canonical_agent_id == "master_orchestrator"
@@ -774,9 +775,14 @@ class OrchestrationLoop:
         from core.engine.prompt_assembler import DISPATCH_PARALLEL
 
         results: list[tuple[str, "_AgentResponse", "ParsedResponse"]] = []
+        # A pending NotebookLM answer goes to every agent of this step, not to whichever
+        # thread builds its prompt first (IOP-32).
+        shared_grounded = self._pending_grounded_context
+        self._pending_grounded_context = ""
 
         def _run(aid: str) -> tuple[str, "_AgentResponse", "ParsedResponse"]:
-            resp = self._dispatch_agent(aid, state, kind=DISPATCH_PARALLEL)
+            resp = self._dispatch_agent(aid, state, kind=DISPATCH_PARALLEL,
+                                        shared_grounded=shared_grounded)
             parsed = self._parse_response(resp.raw_text)
             return aid, resp, parsed
 
@@ -1669,8 +1675,14 @@ class OrchestrationLoop:
         from core.engine.prompt_assembler import knowledge_section
         return knowledge_section(answer) if str(answer or "").strip() else ""
 
-    def _build_extra_context(self, agent_id: str | None = None) -> dict | None:
-        """Context the next prompt carries; agent_id adds that agent's requested skills."""
+    def _build_extra_context(self, agent_id: str | None = None,
+                             shared_grounded: str | None = None) -> dict | None:
+        """Context the next prompt carries; agent_id adds that agent's requested skills.
+
+        A NotebookLM answer is for every agent the next step dispatches (IOP-32). A
+        single dispatch takes it from the pending slot; a parallel dispatch takes it
+        once on the loop thread and passes it to each agent as shared_grounded.
+        """
         from core.engine.prompt_assembler import compose_grounded_context
 
         ctx: dict[str, str] = {}
@@ -1684,7 +1696,10 @@ class OrchestrationLoop:
                 logger.debug("orchestration loop step failed (non-blocking): %s", exc)
             self._pending_consultation_synthesis = None
         sections: list[str] = []
-        if self._pending_grounded_context:
+        if shared_grounded is not None:
+            if shared_grounded:
+                sections.append(shared_grounded)
+        elif self._pending_grounded_context:
             sections.append(self._pending_grounded_context)
             self._pending_grounded_context = ""
         if agent_id:
