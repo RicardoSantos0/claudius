@@ -45,7 +45,7 @@ vector = [
     "pydantic-settings>=2.14.2",
 ]
 server = [
-    "mcp>=1.28.1,<2.0.0",
+    "mcp>=1.30.0,<2.0.0",
 ]
 openai = [
     "openai>=2.51.0",
