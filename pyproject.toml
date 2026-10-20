@@ -37,7 +37,7 @@ Issues = "https://github.com/RicardoSantos0/claudius/issues"
 
 [project.optional-dependencies]
 postgres = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.6",
 ]
 vector = [
     # Avoid ChromaDB 1.x until GHSA-f4j7-r4q5-qw2c has a fixed release.
