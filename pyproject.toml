@@ -42,7 +42,7 @@ postgres = [
 vector = [
     # Avoid ChromaDB 1.x until GHSA-f4j7-r4q5-qw2c has a fixed release.
     "chromadb>=0.5,<1.0.0",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
 ]
 server = [
     "mcp>=1.28.1,<2.0.0",
