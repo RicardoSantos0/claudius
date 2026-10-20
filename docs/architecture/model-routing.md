@@ -33,15 +33,20 @@ Each route records a unique `dispatch_id`, ordered approved candidates, selected
 index, reason, and receipt requirement. The Anthropic reasoning chain is:
 
 1. `anthropic/claude-opus-5-5`;
-2. `anthropic/claude-fable-5-1`, only after `model_unavailable` or `refusal`;
-   Fable is a backup, never the default.
+2. `anthropic/claude-opus-5`, only after `model_unavailable` or `refusal`.
+
+Fable 5.1 is in no default route, because it draws on usage credits: it runs
+only through a complete override pair (`--provider anthropic --model
+claude-fable-5-1`, or `MAS_REASONING_PROVIDER` with `MAS_REASONING_MODEL`).
+The Anthropic standard tier is `claude-sonnet-5-5` and economy `claude-haiku-5-5`.
 
 The OpenAI and Codex reasoning chain is `openai/gpt-6-astra`, then
 `openai/gpt-6.1-sol` on the same two failure classes. Standard is `gpt-6.1-sol`
 and economy `gpt-6-luna`; the GPT-5.6 family has left OpenAI's current lineup.
-Gemini runs `gemini-3.8-flash` then `gemini-3.7-flash` for reasoning,
-`gemini-3.7-flash` for standard and `gemini-3.5-flash-lite` for economy. IDs were
-revalidated against each provider's documentation on 2026-10-04.
+Gemini runs `gemini-3.8-flash` then `gemini-3.6-flash` for reasoning,
+`gemini-3.6-flash` for standard and `gemini-3.5-flash-lite` for economy; 3.7 Flash
+now routes to 3.8 Flash. IDs were revalidated against each provider's
+documentation on 2026-10-13.
 
 Constrain a client or subscription plan before launch:
 
@@ -49,7 +54,7 @@ Constrain a client or subscription plan before launch:
 mas prompt <project-id> product_manager_agent --surface claude `
   --exclude-model claude-opus-5-5 --json
 mas prompt <project-id> project_manager_agent --surface claude `
-  --available-model claude-fable-5-1 --json
+  --available-model claude-opus-5 --json
 ```
 
 `MAS_AVAILABLE_MODELS` and `MAS_EXCLUDED_MODELS` provide comma-separated

@@ -70,6 +70,35 @@ CORE_THREE_CONSULTANTS: list[str] = [
 # Risk levels
 RISK_LEVELS = ("none", "low", "medium", "high")
 
+# A consultant reply whose risk_level or recommendation MAS cannot read is recorded with
+# this value in the field it lacks (IOP-26). It is never approval and never low risk:
+# aggregation treats an unparsed risk level as unknown, so it can neither make the panel
+# unanimous nor break its unanimity, and the synthesis names every unparsed reply.
+UNPARSED = "unparsed"
+_RISK_ALIASES = {"n": "none", "l": "low", "m": "medium", "h": "high"}
+
+# Whether every consultant rated the risk high. "undetermined" means each reply MAS could
+# read said high (or none could be read) and at least one could not be read, so the
+# unread replies decide the answer. The orchestration loop then holds the master's gated
+# action and hands the synthesis back to the master instead of passing or stopping.
+UNANIMITY_UNANIMOUS = "unanimous"
+UNANIMITY_NOT_UNANIMOUS = "not_unanimous"
+UNANIMITY_UNDETERMINED = "undetermined"
+
+
+def normalize_risk_level(value: object) -> str:
+    """One of RISK_LEVELS, read case-insensitively and from its compact code, or UNPARSED."""
+    text = str(value or "").strip().lower()
+    text = _RISK_ALIASES.get(text, text)
+    return text if text in RISK_LEVELS else UNPARSED
+
+
+def response_is_parsed(response: dict) -> bool:
+    """True when a recorded reply carries both a known risk level and a recommendation."""
+    recommendation = str(response.get("recommendation") or "").strip()
+    return (normalize_risk_level(response.get("risk_level")) != UNPARSED
+            and recommendation not in ("", UNPARSED))
+
 from core.paths import mas_root
 DOMAINS_DIR = mas_root() / "domains"
 
@@ -83,7 +112,7 @@ class ConsultationResponse:
     consultant_id: str
     response_text: str
     word_count: int
-    risk_level: str          # none | low | medium | high
+    risk_level: str          # none | low | medium | high | unparsed
     key_concerns: list[str]
     recommendation: str
     responded_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -124,6 +153,12 @@ class ConsultationSynthesis:
     human_escalation_required: bool
     follow_up_round: bool = False
     follow_up_question: Optional[str] = None
+    # IOP-26: replies MAS could not parse, and what that leaves the master to decide.
+    unanimity: str = UNANIMITY_NOT_UNANIMOUS
+    unparsed_consultants: list[str] = field(default_factory=list)
+    unparsed_notice: str = ""
+    # Set by the orchestration loop when it held the master's action for this synthesis.
+    held_action: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -183,23 +218,27 @@ class ConsultationEngine:
         request: ConsultationRequest,
         consultant_id: str,
         response_text: str,
-        risk_level: str = "low",
+        risk_level: str = UNPARSED,
         key_concerns: Optional[list[str]] = None,
-        recommendation: str = "",
+        recommendation: str = UNPARSED,
         reasoning: str = "",
     ) -> ConsultationResponse:
         """
         Record a consultant's response.
         Enforces 500-word cap on response_text; 100-word cap on reasoning.
         Returns the ConsultationResponse and mutates request.responses.
+
+        A risk level is read case-insensitively and from its compact code (h, m, l, n).
+        Any other value, and a missing one, is recorded as UNPARSED, never as low; a
+        missing recommendation is recorded as UNPARSED, never as proceed (IOP-26).
         """
         if consultant_id not in request.consultants_selected:
             raise ValueError(
                 f"Consultant '{consultant_id}' was not selected for request '{request.request_id}'"
             )
 
-        if risk_level not in RISK_LEVELS:
-            risk_level = "low"
+        risk_level = normalize_risk_level(risk_level)
+        recommendation = str(recommendation or "").strip() or UNPARSED
 
         words = response_text.split()
         truncated = len(words) > MAX_RESPONSE_WORDS
@@ -248,34 +287,69 @@ class ConsultationEngine:
     # Risk checks
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _risk_levels(request: ConsultationRequest) -> list[str]:
+        return [normalize_risk_level(r.get("risk_level")) for r in request.responses.values()]
+
+    def unanimity(self, request: ConsultationRequest) -> str:
+        """Whether every responding consultant rated the risk high.
+
+        UNANIMITY_UNANIMOUS when every reply says high; UNANIMITY_NOT_UNANIMOUS when a
+        reply MAS could read says anything else, or nobody replied; otherwise
+        UNANIMITY_UNDETERMINED, because the unparsed replies decide it. An unparsed
+        reply never counts as high and never counts as low.
+        """
+        levels = self._risk_levels(request)
+        if not levels:
+            return UNANIMITY_NOT_UNANIMOUS
+        known = [level for level in levels if level != UNPARSED]
+        if any(level != "high" for level in known):
+            return UNANIMITY_NOT_UNANIMOUS
+        if len(known) < len(levels):
+            return UNANIMITY_UNDETERMINED
+        return UNANIMITY_UNANIMOUS
+
     def check_unanimous_risk(self, request: ConsultationRequest) -> bool:
         """
         Returns True if ALL responding consultants flagged 'high' risk.
-        Triggers mandatory human escalation.
+        Triggers mandatory human escalation. An unparsed reply makes this False and
+        unanimity() UNANIMITY_UNDETERMINED, which the loop hands to the master.
         """
-        if not request.responses:
-            return False
-        return all(
-            r.get("risk_level") == "high"
-            for r in request.responses.values()
-        )
+        return self.unanimity(request) == UNANIMITY_UNANIMOUS
 
     def check_majority_risk(self, request: ConsultationRequest) -> bool:
-        """Returns True if >50% of respondents flagged 'high' risk."""
-        if not request.responses:
+        """True if more than half of the replies with a known risk level flagged 'high'.
+
+        An unparsed reply is left out of the count rather than counted as not high.
+        """
+        known = [level for level in self._risk_levels(request) if level != UNPARSED]
+        if not known:
             return False
-        high_count = sum(1 for r in request.responses.values() if r.get("risk_level") == "high")
-        return high_count > len(request.responses) / 2
+        return known.count("high") > len(known) / 2
 
     def get_highest_risk_level(self, request: ConsultationRequest) -> str:
-        """Returns the highest risk level among all responses."""
-        if not request.responses:
+        """Returns the highest risk level among all responses.
+
+        UNPARSED when a reply MAS could not read might be higher than every reply it
+        could, that is, when some reply is unparsed and no known reply says high.
+        """
+        levels = self._risk_levels(request)
+        if not levels:
             return "none"
         order = {"none": 0, "low": 1, "medium": 2, "high": 3}
-        return max(
-            (r.get("risk_level", "none") for r in request.responses.values()),
-            key=lambda r: order.get(r, 0),
-        )
+        known = [level for level in levels if level != UNPARSED]
+        highest = max(known, key=lambda r: order[r]) if known else None
+        if highest == "high":
+            return "high"
+        if len(known) < len(levels):
+            return UNPARSED
+        return highest or "none"
+
+    @staticmethod
+    def unparsed_consultants(request: ConsultationRequest) -> list[str]:
+        """Consultants whose reply lacks a known risk level or a recommendation."""
+        return [cid for cid, resp in request.responses.items()
+                if not response_is_parsed(resp)]
 
     # ------------------------------------------------------------------
     # Synthesis
@@ -289,18 +363,50 @@ class ConsultationEngine:
         risks_addressed: str,
         follow_up_question: Optional[str] = None,
     ) -> ConsultationSynthesis:
-        """Produce a synthesis of all consultant responses."""
-        unanimous_high = self.check_unanimous_risk(request)
+        """Produce a synthesis of all consultant responses.
+
+        A reply MAS could not parse is named in the summary, in unparsed_consultants and
+        in unparsed_notice, so the master reads it as unknown rather than as approval.
+        """
+        unanimity = self.unanimity(request)
+        unanimous_high = unanimity == UNANIMITY_UNANIMOUS
         human_escalation = unanimous_high
+        unparsed = self.unparsed_consultants(request)
 
         perspectives = list(request.responses.keys())
         summary_parts = []
         for cid, resp in request.responses.items():
-            concerns = "; ".join(resp.get("key_concerns", []))
-            summary_parts.append(
-                f"{cid}: [{resp.get('risk_level', 'low')}] {resp.get('recommendation', '')}. "
-                f"Concerns: {concerns or 'none stated'}"
+            concerns = "; ".join(str(c) for c in resp.get("key_concerns", []) or [])
+            risk = normalize_risk_level(resp.get("risk_level"))
+            recommendation = str(resp.get("recommendation") or "").strip() or UNPARSED
+            if cid in unparsed:
+                summary_parts.append(
+                    f"{cid}: [UNPARSED reply: risk_level={risk}, "
+                    f"recommendation={recommendation}; counted as neither approval nor "
+                    f"low risk]. Concerns: {concerns or 'none stated'}"
+                )
+            else:
+                summary_parts.append(
+                    f"{cid}: [{risk}] {recommendation}. "
+                    f"Concerns: {concerns or 'none stated'}"
+                )
+
+        notice = ""
+        if unparsed:
+            notice = (
+                f"MAS could not parse the replies of {', '.join(unparsed)}: each lacks a "
+                "risk_level of none, low, medium or high, or a recommendation. MAS counts "
+                "them as neither approval nor low risk; read their response_text before "
+                "relying on this panel."
             )
+            if unanimity == UNANIMITY_UNDETERMINED:
+                notice += (
+                    " No other reply could be parsed, so whether the panel is unanimous "
+                    "on high risk is undetermined."
+                    if len(unparsed) == len(request.responses) else
+                    " Every reply MAS could parse rated the risk high, so whether the "
+                    "panel is unanimous on high risk is undetermined."
+                )
 
         synthesis = ConsultationSynthesis(
             synthesis_id=f"synth-{request.request_id}",
@@ -317,6 +423,9 @@ class ConsultationEngine:
             human_escalation_required=human_escalation,
             follow_up_round=follow_up_question is not None,
             follow_up_question=follow_up_question,
+            unanimity=unanimity,
+            unparsed_consultants=unparsed,
+            unparsed_notice=notice,
         )
 
         request.status = "synthesized"
@@ -379,6 +488,10 @@ class ConsultationEngine:
             "human_escalation_required": synthesis.human_escalation_required,
             "follow_up_round": synthesis.follow_up_round,
             "follow_up_question": synthesis.follow_up_question,
+            "unanimity": synthesis.unanimity,
+            "unparsed_consultants": synthesis.unparsed_consultants,
+            "unparsed_notice": synthesis.unparsed_notice,
+            "held_action": synthesis.held_action,
         }
         with open(path, "w") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -608,13 +721,21 @@ def _cli_check_risk(args: list[str]) -> None:
         return
 
     for cid, r in responses.items():
-        lvl = r.get("risk_level", "none")
-        print(f"  {cid}: {lvl}")
+        lvl = normalize_risk_level(r.get("risk_level"))
+        flag = "" if response_is_parsed(r) else "  (UNPARSED reply: neither approval nor low risk)"
+        print(f"  {cid}: {lvl}{flag}")
 
-    unanimous = all(r.get("risk_level") == "high" for r in responses.values())
-    print(f"\nUnanimous high-risk: {unanimous}")
-    if unanimous:
+    request = ConsultationRequest(
+        request_id=ns.request_id, project_id=ns.project_id, timestamp="",
+        requested_by="", question="", context={}, decision_type="", mandatory=False,
+        consultants_selected=list(responses), responses=responses,
+    )
+    unanimity = engine.unanimity(request)
+    print(f"\nUnanimous high-risk: {unanimity == UNANIMITY_UNANIMOUS} ({unanimity})")
+    if unanimity == UNANIMITY_UNANIMOUS:
         print("*** HUMAN ESCALATION REQUIRED — Master cannot override unanimous high-risk ***")
+    elif unanimity == UNANIMITY_UNDETERMINED:
+        print("*** UNDETERMINED: unparsed replies decide unanimity; the master must decide ***")
 
 
 if __name__ == "__main__":

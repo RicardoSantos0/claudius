@@ -492,8 +492,8 @@ When invoked directly through Claude Code rather than live `mas run`, do manual 
    `routing.model`; agent files inherit and would otherwise run on the session
    model. Claude reasoning-tier roles use Opus 5.5 first. If the active plan
    excludes it, regenerate with `--exclude-model claude-opus-5-5` so MAS selects
-   the Fable 5.1 backup. Runtime fallback is allowed only for unavailability or
-   refusal.
+   the Opus 5 fallback. Runtime fallback is allowed only for unavailability or
+   refusal, and Fable runs only when it is asked for explicitly.
 5. Apply the wire response through `mas ingest` with `--dispatch-id`,
    `--reported-provider`, `--reported-model`, and `--verification-source`.
    Do not mutate state directly in place of ingestion.

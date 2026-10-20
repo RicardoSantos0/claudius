@@ -119,7 +119,13 @@ class OrchestrationLoop:
     def __init__(self, config: LoopConfig) -> None:
         self.config = config
         self._pending_consultation_synthesis: Any = None
+        # A NotebookLM answer, for whichever agent the next step dispatches.
         self._pending_grounded_context: str = ""
+        # Requested skill text, or a notice saying why none came, keyed by the agent that
+        # sent the skill_request, so only that agent's next prompt carries it (IOP-27).
+        self._pending_skill_sections: dict[str, list[str]] = {}
+        # skill_requests answered in a row per agent; reset when MAS acts on a response.
+        self._skill_requests_in_a_row: dict[str, int] = {}
         self._pending_deployment_plan: list[dict] = []   # set when HR returns a deploy plan
         self._agent_error_counts: dict[str, int] = {}
         self._recorded_skill_recommendations: set[tuple[str, str, str]] = set()
@@ -171,15 +177,16 @@ class OrchestrationLoop:
 
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
-                        self._pending_grounded_context = answer
+                        self._pending_grounded_context = self._knowledge_context(answer)
                         print("  [notebooklm] grounded context injected for next step")
 
-                    if parsed.skill_request:
-                        self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
+                    if parsed.skill_request and self._answer_skill_request(
+                            agent_id, parsed.skill_request, last_phase):
                         self._record_skills_used(agent_id, parsed.skills_used, last_phase)
                         step += 1
                         continue
 
+                    self._skill_requests_in_a_row.pop(agent_id, None)
                     self._record_skills_used(agent_id, parsed.skills_used, last_phase)
                     stop = self._execute_master_actions(parsed, state)
                     if stop:
@@ -203,15 +210,16 @@ class OrchestrationLoop:
 
                     if parsed.knowledge_request:
                         answer = self._handle_knowledge_request(parsed.knowledge_request)
-                        self._pending_grounded_context = answer
+                        self._pending_grounded_context = self._knowledge_context(answer)
                         print("  [notebooklm] grounded context injected for next step")
 
-                    if parsed.skill_request:
-                        self._handle_skill_request(agent_id, parsed.skill_request, last_phase)
+                    if parsed.skill_request and self._answer_skill_request(
+                            agent_id, parsed.skill_request, last_phase):
                         self._record_skills_used(agent_id, parsed.skills_used, last_phase)
                         step += 1
                         continue
 
+                    self._skill_requests_in_a_row.pop(agent_id, None)
                     if parsed.next_action == "escalate":
                         raise _EscalationRequired(
                             parsed.reasoning or f"Agent '{agent_id}' requested escalation."
@@ -237,10 +245,13 @@ class OrchestrationLoop:
                             raise _EscalationRequired(
                                 p_parsed.reasoning or f"Agent '{p_id}' requested escalation."
                             )
-                        if p_parsed.skill_request:
-                            self._handle_skill_request(p_id, p_parsed.skill_request, last_phase)
+                        if p_parsed.skill_request and self._answer_skill_request(
+                                p_id, p_parsed.skill_request, last_phase):
+                            # The task stays open, so the next step dispatches this
+                            # agent again, with its own requested text only.
                             self._record_skills_used(p_id, p_parsed.skills_used, last_phase)
                             continue
+                        self._skill_requests_in_a_row.pop(p_id, None)
                         self._accept_pending_handoff(state, p_id, p_parsed)
                         self._record_subagent_output(p_id, p_parsed)
 
@@ -281,12 +292,19 @@ class OrchestrationLoop:
     # Agent dispatch
     # ------------------------------------------------------------------
 
-    def _dispatch_agent(self, agent_id: str, state: dict) -> "_AgentResponse":
+    def _dispatch_agent(self, agent_id: str, state: dict,
+                        kind: str | None = None,
+                        shared_grounded: str | None = None) -> "_AgentResponse":
         from core.engine.agent_runner import AgentRunner
         from core.engine.execution_profile_router import ExecutionProfileRouter
         from core.engine.prompt_assembler import (
+            DISPATCH_KIND_KEY,
+            DISPATCH_MAIN,
+            DISPATCH_SUB_AGENT,
             SKILL_DELIVERY_INLINE,
             SKILL_DELIVERY_KEY,
+            SKILL_REQUEST_LIMIT,
+            SKILL_REQUESTS_LEFT_KEY,
             PromptAssembler,
         )
 
@@ -298,9 +316,17 @@ class OrchestrationLoop:
         phase = state.get("core_identity", {}).get("current_phase", "intake")
         # This prompt goes to an AgentRunner API adapter, which makes no tool calls, so
         # the agent cannot load a skill itself: the assembler inlines the REQUIRED skills
-        # it is authorized for instead of naming a command (IOP-22).
-        extra_ctx = dict(self._build_extra_context() or {})
+        # it is authorized for instead of naming a command (IOP-22). The dispatch kind
+        # and the requests left tell it what a skill_request leads to (IOP-27).
+        extra_ctx = dict(self._build_extra_context(canonical_agent_id, shared_grounded) or {})
         extra_ctx[SKILL_DELIVERY_KEY] = SKILL_DELIVERY_INLINE
+        extra_ctx[DISPATCH_KIND_KEY] = kind or (
+            DISPATCH_MAIN if canonical_agent_id == "master_orchestrator"
+            else DISPATCH_SUB_AGENT
+        )
+        extra_ctx[SKILL_REQUESTS_LEFT_KEY] = max(
+            0, SKILL_REQUEST_LIMIT - self._skill_requests_in_a_row.get(canonical_agent_id, 0)
+        )
         self._record_skill_recommendations(state, phase=phase)
 
         # Inject pending handoff task description for sub-agents
@@ -477,15 +503,67 @@ class OrchestrationLoop:
             return result
         return {}
 
+    def _answer_skill_request(
+        self,
+        agent_id: str,
+        skill_request: dict,
+        phase: str,
+    ) -> bool:
+        """Answer a skill_request unless the agent has sent SKILL_REQUEST_LIMIT in a row.
+
+        Returns True when MAS answered it; the caller then acts on nothing else in the
+        response. Returns False once the limit is reached: MAS ignores the request and
+        the caller acts on the rest of the response, so no agent holds its task open
+        forever. The caller resets the count whenever it acts on a response.
+        """
+        from core.engine.prompt_assembler import SKILL_REQUEST_LIMIT
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
+        sent = self._skill_requests_in_a_row.get(agent_id, 0)
+        if sent >= SKILL_REQUEST_LIMIT:
+            print(f"  [skill] {agent_id}: skill_request ignored after {sent} in a row")
+            try:
+                from core.engine.event_recorder import EventRecorder
+                EventRecorder().record_simple(
+                    project_id=self.config.project_id,
+                    actor=agent_id,
+                    action_type="skill_request_ignored",
+                    intent=f"skill_request ignored after {sent} in a row",
+                    phase=phase,
+                    payload={"skill_request": skill_request, "limit": SKILL_REQUEST_LIMIT},
+                )
+            except Exception as exc:
+                logger.debug("orchestration loop step failed (non-blocking): %s", exc)
+            return False
+        self._skill_requests_in_a_row[agent_id] = sent + 1
+        self._handle_skill_request(agent_id, skill_request, phase)
+        return True
+
     def _handle_skill_request(
         self,
         agent_id: str,
         skill_request: dict,
         phase: str,
     ) -> None:
-        """Authorize and render an agent-requested skill as a controlled MAS step."""
+        """Authorize and render an agent-requested skill as a controlled MAS step.
+
+        The skill's text, or a notice saying why none came, is queued for the agent that
+        asked, and only that agent's next prompt carries it (IOP-27).
+        """
+        from core.engine.prompt_assembler import (
+            REQUESTED_SKILL_CHAR_CAP,
+            notice_section,
+            skill_section,
+        )
+
+        agent_id = normalize_agent_id(agent_id) or agent_id
+        queue = self._pending_skill_sections.setdefault(agent_id, [])
         skill_name = skill_request.get("name") or skill_request.get("skill")
         if not skill_name:
+            queue.append(notice_section(
+                "", 'Your skill_request named no skill, so MAS delivered nothing. Name '
+                    'the skill in "name".'
+            ))
             return
         query = str(skill_request.get("query", ""))
         required = bool(skill_request.get("required", False))
@@ -505,13 +583,21 @@ class OrchestrationLoop:
                                    project_id=self.config.project_id)
             if not result.success:
                 print(f"  [skill] {skill_name}: {result.outcome}")
+                reason = {
+                    "denied": "you are not authorized for it",
+                    "skill_not_found": "no installed skill has that name",
+                }.get(result.outcome, f"the request ended with outcome {result.outcome}")
+                queue.append(notice_section(
+                    str(skill_name), f"MAS did not deliver `{skill_name}`: {reason}."
+                ))
                 return
+            skill = bridge.get_skill(str(skill_name))
+            key = skill.key if skill is not None else str(skill_name)
             rendered = bridge.render_skill_prompt(
-                agent_id, str(skill_name), query, project_id=self.config.project_id
+                agent_id, str(skill_name), query, project_id=self.config.project_id,
+                char_cap=REQUESTED_SKILL_CHAR_CAP,
             )
-            self._pending_grounded_context = (
-                f"[skill_prompt:{skill_name}]\n{rendered}"
-            )
+            queue.append(skill_section(key, rendered))
             EventRecorder().record_simple(
                 project_id=self.config.project_id,
                 actor=agent_id,
@@ -524,9 +610,12 @@ class OrchestrationLoop:
                     "outcome": "rendered_prompt",
                 },
             )
-            print(f"  [skill] {skill_name} prompt rendered for next step")
+            print(f"  [skill] {skill_name} prompt rendered for {agent_id}'s next prompt")
         except Exception as exc:
             print(f"  [skill_warn] {skill_name}: {exc}")
+            queue.append(notice_section(
+                str(skill_name), f"MAS could not deliver `{skill_name}`: {exc}"
+            ))
 
     def _record_skills_used(
         self,
@@ -683,10 +772,17 @@ class OrchestrationLoop:
         Dispatch multiple agents concurrently via ThreadPoolExecutor.
         Returns a list of (agent_id, response, parsed) in completion order.
         """
+        from core.engine.prompt_assembler import DISPATCH_PARALLEL
+
         results: list[tuple[str, "_AgentResponse", "ParsedResponse"]] = []
+        # A pending NotebookLM answer goes to every agent of this step, not to whichever
+        # thread builds its prompt first (IOP-32).
+        shared_grounded = self._pending_grounded_context
+        self._pending_grounded_context = ""
 
         def _run(aid: str) -> tuple[str, "_AgentResponse", "ParsedResponse"]:
-            resp = self._dispatch_agent(aid, state)
+            resp = self._dispatch_agent(aid, state, kind=DISPATCH_PARALLEL,
+                                        shared_grounded=shared_grounded)
             parsed = self._parse_response(resp.raw_text)
             return aid, resp, parsed
 
@@ -798,6 +894,8 @@ class OrchestrationLoop:
             if synthesis and getattr(synthesis, "human_escalation_required", False):
                 raise _EscalationRequired("Human escalation required by consultation panel.")
             self._pending_consultation_synthesis = synthesis
+            if self._hold_for_unparsed_replies(synthesis, parsed, phase):
+                return None
 
         consultation_stop = self._consultation_gate_stop(
             parsed, state, consultation_trigger, phase
@@ -948,13 +1046,20 @@ class OrchestrationLoop:
     def _run_consultation(self, trigger: dict,
                           state: dict) -> Any:
         """Run full consultation round. Returns ConsultationSynthesis or None."""
-        from core.engine.consultation_engine import ConsultationEngine
-        from core.engine.agent_runner import AgentRunner
-        from core.engine.execution_profile_router import ExecutionProfileRouter
+        from core.engine.consultation_engine import (
+            UNPARSED,
+            ConsultationEngine,
+            normalize_risk_level,
+            response_is_parsed,
+        )
         from core.engine.prompt_assembler import (
+            DISPATCH_CONSULTATION,
+            DISPATCH_KIND_KEY,
             SKILL_DELIVERY_INLINE,
             SKILL_DELIVERY_KEY,
+            SKILL_REQUESTS_LEFT_KEY,
             PromptAssembler,
+            compose_grounded_context,
         )
         from core.engine.shared_state_manager import SharedStateManager
 
@@ -1003,6 +1108,7 @@ class OrchestrationLoop:
         except Exception as exc:
             logger.debug("orchestration loop step failed (non-blocking): %s", exc)
 
+        phase = state.get("core_identity", {}).get("current_phase", "")
         for consultant_id in request.consultants_selected:
             extra = {
                 "injected_consultation_question": request.question,
@@ -1010,41 +1116,26 @@ class OrchestrationLoop:
                     trigger.get("context", {}), default_flow_style=False),
                 # Consultants also run through an AgentRunner API adapter (IOP-22).
                 SKILL_DELIVERY_KEY: SKILL_DELIVERY_INLINE,
+                DISPATCH_KIND_KEY: DISPATCH_CONSULTATION,
+                SKILL_REQUESTS_LEFT_KEY: 1,
             }
             if consultant_id == "domain_expert":
                 extra["injected_domain_context"] = request.domain_context
-            prompt = assembler.assemble(consultant_id, state, extra_context=extra)
-            consult_metadata = getattr(assembler, "last_prompt_metadata", {})
-            router = ExecutionProfileRouter()
-            selection = router.resolve(
-                consultant_id,
-                state.get("core_identity", {}).get("current_phase", ""),
-                explicit_profile=trigger.get("execution_profile"),
-                explicit_model=trigger.get("model_override"),
-                explicit_provider=trigger.get("provider_override"),
-                risk_level=(trigger.get("risk_level") or self._project_risk_level(state)),
-                retry_count=self._agent_error_counts.get(consultant_id, 0),
-                provider_catalog=(
-                    trigger.get("provider_catalog") or self.config.provider_catalog
-                ),
-            )
-            route_action_id = router.record_route_selection(
-                self.config.project_id, selection
-            )
-            route_selection = selection.to_dict()
-            route_selection["route_action_id"] = route_action_id
-            runner = AgentRunner(
-                model=selection.model,
-                provider=selection.provider,
-                route_selection=route_selection,
-            )
-            result = runner.run(consultant_id, prompt,
-                                project_id=self.config.project_id)
-            if not result.get("error"):
-                self._record_inline_skill_delivery(consultant_id, consult_metadata)
-
-            c_text = result.get("text", "")
+            c_text = self._consult_once(consultant_id, extra, state, trigger, assembler)
             c_parsed = self._parse_consultant_response(c_text)
+
+            # One skill_request per consultant per consultation: MAS asks once more with
+            # the skill's text and records only that second answer (IOP-26).
+            if c_parsed.get("skill_request"):
+                self._handle_skill_request(consultant_id, c_parsed["skill_request"], phase)
+                second = {**extra, SKILL_REQUESTS_LEFT_KEY: 0}
+                grounded = compose_grounded_context(
+                    self._pending_skill_sections.pop(consultant_id, [])
+                )
+                if grounded:
+                    second["injected_grounded_context"] = grounded
+                c_text = self._consult_once(consultant_id, second, state, trigger, assembler)
+                c_parsed = self._parse_consultant_response(c_text)
 
             # Handle consultant KNOWLEDGE_REQUEST (broker pattern)
             if c_parsed.get("knowledge_request"):
@@ -1053,14 +1144,18 @@ class OrchestrationLoop:
                     c_parsed.get("key_concerns", []) + [f"[grounded] {answer[:200]}"]
                 )
 
+            # A missing or unknown value is recorded as unparsed, never as low risk or
+            # as proceed (IOP-26).
+            risk_level = normalize_risk_level(c_parsed.get("risk_level"))
+            recommendation = str(c_parsed.get("recommendation") or "").strip() or UNPARSED
             try:
                 engine.record_response(
                     request,
                     consultant_id=consultant_id,
                     response_text=c_text,
-                    risk_level=c_parsed.get("risk_level", "low"),
+                    risk_level=risk_level,
                     key_concerns=c_parsed.get("key_concerns", []),
-                    recommendation=c_parsed.get("recommendation", "proceed"),
+                    recommendation=recommendation,
                     reasoning=c_parsed.get("reasoning", ""),
                 )
                 try:
@@ -1072,8 +1167,12 @@ class OrchestrationLoop:
                         intent=f"Consultation response for {request.request_id}",
                         payload={
                             "request_id": request.request_id,
-                            "risk_level": c_parsed.get("risk_level", "low"),
-                            "recommendation": c_parsed.get("recommendation", "proceed"),
+                            "risk_level": risk_level,
+                            "recommendation": recommendation,
+                            "parsed": response_is_parsed({
+                                "risk_level": risk_level,
+                                "recommendation": recommendation,
+                            }),
                         },
                         phase=state.get("core_identity", {}).get("current_phase"),
                     )
@@ -1116,6 +1215,8 @@ class OrchestrationLoop:
                     "synthesis_id": synthesis.synthesis_id,
                     "decision_reached": synthesis.decision_reached,
                     "human_escalation_required": synthesis.human_escalation_required,
+                    "unanimity": getattr(synthesis, "unanimity", ""),
+                    "unparsed_consultants": getattr(synthesis, "unparsed_consultants", []),
                 },
                 phase=state.get("core_identity", {}).get("current_phase"),
             )
@@ -1131,6 +1232,71 @@ class OrchestrationLoop:
             logger.debug("orchestration loop step failed (non-blocking): %s", exc)
 
         return synthesis
+
+    def _consult_once(self, consultant_id: str, extra: dict, state: dict,
+                      trigger: dict, assembler: Any) -> str:
+        """Ask one consultant once through its approved route; returns the reply text."""
+        from core.engine.agent_runner import AgentRunner
+        from core.engine.execution_profile_router import ExecutionProfileRouter
+
+        prompt = assembler.assemble(consultant_id, state, extra_context=extra)
+        consult_metadata = getattr(assembler, "last_prompt_metadata", {})
+        router = ExecutionProfileRouter()
+        selection = router.resolve(
+            consultant_id,
+            state.get("core_identity", {}).get("current_phase", ""),
+            explicit_profile=trigger.get("execution_profile"),
+            explicit_model=trigger.get("model_override"),
+            explicit_provider=trigger.get("provider_override"),
+            risk_level=(trigger.get("risk_level") or self._project_risk_level(state)),
+            retry_count=self._agent_error_counts.get(consultant_id, 0),
+            provider_catalog=(
+                trigger.get("provider_catalog") or self.config.provider_catalog
+            ),
+        )
+        route_action_id = router.record_route_selection(
+            self.config.project_id, selection
+        )
+        route_selection = selection.to_dict()
+        route_selection["route_action_id"] = route_action_id
+        runner = AgentRunner(
+            model=selection.model,
+            provider=selection.provider,
+            route_selection=route_selection,
+        )
+        result = runner.run(consultant_id, prompt,
+                            project_id=self.config.project_id)
+        if not result.get("error"):
+            self._record_inline_skill_delivery(consultant_id, consult_metadata)
+        return result.get("text", "")
+
+    def _hold_for_unparsed_replies(self, synthesis: Any, parsed: "ParsedResponse",
+                                   phase: str) -> bool:
+        """Hold the master's gated action when unparsed replies decide the panel (IOP-26).
+
+        When every reply MAS could read rated the risk high and at least one reply could
+        not be read, the panel may or may not be unanimous. MAS then neither passes the
+        action nor stops the run: it records the held action on the synthesis, which
+        reaches the master's next prompt with the notice naming the unparsed replies.
+        """
+        from core.engine.consultation_engine import UNANIMITY_UNDETERMINED
+
+        if getattr(synthesis, "unanimity", "") != UNANIMITY_UNDETERMINED:
+            return False
+        gated = parsed.next_action == "advance_phase" or (
+            parsed.next_action == "delegate"
+            and not is_consultant_panel_alias(parsed.next_agent)
+        )
+        if not gated:
+            return False
+        synthesis.held_action = parsed.next_action
+        message = (
+            f"Held {parsed.next_action}: {getattr(synthesis, 'unparsed_notice', '')} "
+            "The master decides on its next turn."
+        )
+        print(f"  [consult_hold] {message}")
+        self._record_policy_block("consultation-unparsed-replies", message, parsed, phase)
+        return True
 
     def _consultation_gate_stop(
         self,
@@ -1228,39 +1394,41 @@ class OrchestrationLoop:
     def _parse_consultant_response(self, text: str) -> dict:
         """
         Light parser for consultant responses.
-        Extracts risk_level, key_concerns, recommendation, reasoning.
+        Extracts risk_level, key_concerns, recommendation, reasoning, and any
+        knowledge_request or skill_request.
+
+        Only the wire block is read for risk_level and recommendation. A value it lacks
+        or MAS cannot read is UNPARSED, never low risk or proceed, and a reply without a
+        wire block is not guessed from its words (IOP-26).
         """
+        from core.engine.consultation_engine import UNPARSED, normalize_risk_level
+
         result: dict[str, Any] = {
-            "risk_level": "low",
+            "risk_level": UNPARSED,
             "key_concerns": [],
-            "recommendation": "proceed",
+            "recommendation": UNPARSED,
             "reasoning": "",
             "knowledge_request": None,
+            "skill_request": None,
         }
         if not text:
             return result
 
-        # Try wire block first
         from core.engine.response_parser import ResponseParser
         parsed = ResponseParser().parse(text)
+        result["knowledge_request"] = parsed.knowledge_request
+        result["skill_request"] = parsed.skill_request
         if parsed.raw_wire:
             w = parsed.raw_wire
-            result["risk_level"] = w.get("risk_level", w.get("rl", "low"))
-            result["key_concerns"] = w.get("key_concerns", w.get("kc", []))
-            result["recommendation"] = w.get("recommendation", w.get("rec", "proceed"))
+            result["risk_level"] = normalize_risk_level(w.get("risk_level", w.get("rl")))
+            result["key_concerns"] = w.get("key_concerns", w.get("kc", [])) or []
+            result["recommendation"] = (
+                str(w.get("recommendation", w.get("rec")) or "").strip() or UNPARSED
+            )
             result["reasoning"] = parsed.reasoning
-            result["knowledge_request"] = parsed.knowledge_request
             return result
 
-        # Heuristic: scan for risk keywords
-        lower = text.lower()
-        if any(w in lower for w in ("critical", "high risk", "severe", "dangerous")):
-            result["risk_level"] = "high"
-        elif any(w in lower for w in ("medium risk", "moderate", "concern")):
-            result["risk_level"] = "medium"
-
         result["reasoning"] = text[:500]
-        result["knowledge_request"] = parsed.knowledge_request
         return result
 
     # ------------------------------------------------------------------
@@ -1501,7 +1669,22 @@ class OrchestrationLoop:
         from core.engine.shared_state_manager import SharedStateManager
         return SharedStateManager(self.config.project_id).load()
 
-    def _build_extra_context(self) -> dict | None:
+    @staticmethod
+    def _knowledge_context(answer: str) -> str:
+        """A NotebookLM answer as a grounded-context section, or "" for no answer."""
+        from core.engine.prompt_assembler import knowledge_section
+        return knowledge_section(answer) if str(answer or "").strip() else ""
+
+    def _build_extra_context(self, agent_id: str | None = None,
+                             shared_grounded: str | None = None) -> dict | None:
+        """Context the next prompt carries; agent_id adds that agent's requested skills.
+
+        A NotebookLM answer is for every agent the next step dispatches (IOP-32). A
+        single dispatch takes it from the pending slot; a parallel dispatch takes it
+        once on the loop thread and passes it to each agent as shared_grounded.
+        """
+        from core.engine.prompt_assembler import compose_grounded_context
+
         ctx: dict[str, str] = {}
         if self._pending_consultation_synthesis:
             try:
@@ -1512,9 +1695,18 @@ class OrchestrationLoop:
             except Exception as exc:
                 logger.debug("orchestration loop step failed (non-blocking): %s", exc)
             self._pending_consultation_synthesis = None
-        if self._pending_grounded_context:
-            ctx["injected_grounded_context"] = self._pending_grounded_context
+        sections: list[str] = []
+        if shared_grounded is not None:
+            if shared_grounded:
+                sections.append(shared_grounded)
+        elif self._pending_grounded_context:
+            sections.append(self._pending_grounded_context)
             self._pending_grounded_context = ""
+        if agent_id:
+            key = normalize_agent_id(agent_id) or agent_id
+            sections.extend(self._pending_skill_sections.pop(key, []))
+        if sections:
+            ctx["injected_grounded_context"] = compose_grounded_context(sections)
         if self._pending_deployment_plan:
             # Surface HR's deployment plan so master reads and routes from it
             ctx["injected_hr_deployment_plan"] = yaml.dump(

@@ -24,7 +24,7 @@ dependencies = [
     "anthropic>=0.120.2",
     "pyyaml>=6.0",
     "python-dotenv>=1.0",
-    "click>=8.4.2",
+    "click>=8.5.0",
     # Security lower bounds for transitive HTTP/name handling packages.
     "idna>=3.15",
     "urllib3>=2.8.0",
@@ -37,15 +37,15 @@ Issues = "https://github.com/RicardoSantos0/claudius/issues"
 
 [project.optional-dependencies]
 postgres = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary]>=3.3.6",
 ]
 vector = [
     # Avoid ChromaDB 1.x until GHSA-f4j7-r4q5-qw2c has a fixed release.
     "chromadb>=0.5,<1.0.0",
-    "pydantic-settings>=2.14.2",
+    "pydantic-settings>=2.15.0",
 ]
 server = [
-    "mcp>=1.28.1,<2.0.0",
+    "mcp>=1.30.0,<2.0.0",
 ]
 openai = [
     "openai>=2.51.0",

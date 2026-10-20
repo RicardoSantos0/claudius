@@ -19,7 +19,7 @@ import yaml
 from core.utils.token_counter import TokenCounter
 from core.engine.context_compressor import compress, estimate_tokens
 from core.engine.agent_ids import normalize_agent_id
-from core.engine.skill_trigger import SKILL_REQUEST_HINT
+from core.engine.skill_trigger import SKILL_REQUEST_FIELD, SKILL_REQUEST_HINT
 
 # Threshold (tokens) above which we compress the state projection before injection
 _COMPRESSION_TOKEN_THRESHOLD = 2000
@@ -30,11 +30,49 @@ _COMPRESSION_TOKEN_THRESHOLD = 2000
 # can name no command the agent could run. Callers on that path pass
 # extra_context={SKILL_DELIVERY_KEY: SKILL_DELIVERY_INLINE}, and the assembler then includes
 # the text of each REQUIRED skill the agent is authorized for, after the stable prefix, as
-# far as the caps below allow. Any other skill reaches the master or a single sub-agent
-# through a skill_request in its wire block, which the orchestration loop answers on that
-# agent's next step; SKILL_REQUEST_KEY covers the exchanges where it does not.
+# far as the caps below allow. Any other skill reaches the agent through a skill_request in
+# its wire block, which the orchestration loop answers in the way DISPATCH_KIND_KEY names.
 SKILL_DELIVERY_KEY = "skill_delivery"
 SKILL_DELIVERY_INLINE = "inline"
+
+# The kind of dispatch a prompt is assembled for (IOP-27). The orchestration loop passes
+# it with every prompt, because what follows a skill_request depends on it:
+#   main          the master's turn: MAS acts on nothing in the response and runs the
+#                 master again at the next loop step, with the skill's text.
+#   sub_agent     the one sub-agent with a pending handoff: the same, for that agent.
+#   parallel      one of several sub-agents dispatched together: MAS keeps the others'
+#                 results, leaves this agent's task open, and dispatches it again on the
+#                 same task at the next loop step, before the master's next turn.
+#   consultation  a consultant: MAS asks it once more in the same consultation, with the
+#                 skill's text, and records that second answer.
+# A prompt with no kind is treated as main. An unknown kind gets no request path, so a
+# prompt never promises a delivery that no caller will make.
+DISPATCH_KIND_KEY = "dispatch_kind"
+DISPATCH_MAIN = "main"
+DISPATCH_SUB_AGENT = "sub_agent"
+DISPATCH_PARALLEL = "parallel"
+DISPATCH_CONSULTATION = "consultation"
+DISPATCH_KINDS = frozenset({
+    DISPATCH_MAIN, DISPATCH_SUB_AGENT, DISPATCH_PARALLEL, DISPATCH_CONSULTATION,
+})
+
+# How many more skill_requests MAS answers from this agent, passed by the orchestration
+# loop with every prompt. For a consultant it is 1 on its first turn and 0 on the turn
+# that answers its request; for any other agent, SKILL_REQUEST_LIMIT less the requests it
+# has sent in a row. At 0 the prompt says that a further request is ignored.
+SKILL_REQUESTS_LEFT_KEY = "skill_requests_left"
+
+# MAS answers at most this many skill_requests in a row from one agent (not a consultant,
+# which gets one per consultation). The count resets whenever MAS acts on a response from
+# that agent. A skill_request sent with none left is ignored, and MAS acts on the rest of
+# that response as if it carried no request, so no agent can hold its task open forever.
+SKILL_REQUEST_LIMIT = 3
+
+# Bound on the SKILL.md text a skill_request delivers, about 8,000 tokens: four times the
+# inline per-skill cap, because a request is the agent's own choice and arrives without
+# the other inlined skills competing for room. Most shipped skills fit whole; a longer one
+# is cut with a notice naming the file that holds the rest.
+REQUESTED_SKILL_CHAR_CAP = 32000
 
 # Per-skill bound on inlined SKILL.md text, about 2,000 tokens. Every REQUIRED skill in the
 # shipped trigger policy is under 3,500 characters and inlines whole; the bound stops a long
@@ -47,38 +85,113 @@ INLINE_SKILL_CHAR_CAP = 8000
 # skill_request where MAS answers one.
 INLINE_TOTAL_CHAR_CAP = 12000
 
-# Whether MAS answers a skill_request sent from this exchange. The orchestration loop
-# answers one from the master or from a single sub-agent, on that agent's next step. It
-# answers none from a consultation, which is one exchange whose answer it never reads
-# for a skill_request. Parallel sub-agents share one pending slot, so a request from one
-# of them can be lost or reach another agent. A caller may set this key to False; the
-# assembler also infers False for a consultation prompt (one that carries
-# injected_consultation_question) and for a prompt assembled on a parallel dispatch
-# thread. Only inline delivery reads it.
+# A caller that answers no skill_request from this exchange sets this key to False, and
+# the prompt then says that no further skill text can reach the agent. Only inline
+# delivery reads it.
 SKILL_REQUEST_KEY = "skill_request_supported"
 
-# OrchestrationLoop._dispatch_agents_parallel runs each agent on a pool thread whose
-# name starts with this prefix (its ThreadPoolExecutor thread_name_prefix).
-_PARALLEL_THREAD_PREFIX = "mas_parallel"
-
-NO_SKILL_REQUEST_CONSULTATION = (
-    "A consultation is a single exchange, and MAS reads no skill_request from a "
-    "consultation answer, so no skill text beyond what this prompt includes can reach "
-    "you. Answer from what is here."
+SKILL_REQUEST_HINT_PARALLEL = (
+    "To use an authorized skill whose text is not in this prompt, end your response "
+    "with your wire block, a JSON object in a ```json fence, carrying "
+    f"`{SKILL_REQUEST_FIELD}`. You run in parallel with other agents in this step, and "
+    "MAS keeps their results. It does not record the decisions, artifacts or escalation "
+    "in a response of yours that carries a skill_request, and it leaves your task open: "
+    "at the next loop step, before the master's next turn, MAS dispatches you again on "
+    "the same task, with the skill's text under Grounded Context. So send the request on "
+    "its own and answer when you are dispatched again."
 )
-NO_SKILL_REQUEST_PARALLEL = (
-    "You run in parallel with other agents in this step, and MAS cannot make sure that "
-    "a skill_request reaches the agent that sent it, so do not send one. Work from the "
-    "skill text this prompt includes."
+SKILL_REQUEST_HINT_CONSULTATION = (
+    "To use an authorized skill whose text is not in this prompt, end your reply with "
+    "your wire block, a JSON object in a ```json fence, carrying "
+    f"`{SKILL_REQUEST_FIELD}`, and leave the risk assessment out of that reply. MAS then "
+    "asks you once more in this consultation, with the skill's text under Grounded "
+    "Context, and records only your second answer. MAS answers one skill_request from "
+    "you per consultation, so it ignores a skill_request in your second answer."
+)
+NO_SKILL_REQUEST_CONSULTATION = (
+    "This is your second turn in this consultation, after the one skill_request MAS "
+    "answers per consultant, so MAS records this answer as your reply and ignores any "
+    "skill_request in it. Answer from what this prompt includes."
+)
+SKILL_REQUEST_LIMIT_REACHED = (
+    f"You have sent the {SKILL_REQUEST_LIMIT} skill_requests in a row that MAS answers, "
+    "so MAS ignores a skill_request in this response and acts on the rest of it as if it "
+    "carried none. Answer from what this prompt includes."
 )
 NO_SKILL_REQUEST = (
     "MAS answers no skill_request in this exchange, so no skill text beyond what this "
     "prompt includes can reach you."
 )
 
-# The orchestration loop hands a requested skill on as "[skill_prompt:<name>]" and the
-# prompt SkillBridge.render_skill_prompt built, at the start of injected_grounded_context.
-_SKILL_PROMPT_MARKER = re.compile(r"\[skill_prompt:([^\]\r\n]+)\]\r?\n")
+
+def _skill_request_limit_note(left: int) -> str:
+    return (
+        f"MAS answers at most {SKILL_REQUEST_LIMIT} skill_requests in a row from one "
+        f"agent, and you have {left} left; once they are used, MAS ignores a further "
+        "skill_request and acts on the rest of that response."
+    )
+
+
+# Injected grounded context is a run of sections, each opened by a marker line on its
+# own. The orchestration loop writes one section for each item it delivers to an agent,
+# and the assembler reads them back to tell which skills a skill_request delivered:
+#   [skill_prompt:<folder key>]        the prompt SkillBridge.render_skill_prompt built
+#   [knowledge_answer]                 a NotebookLM answer to a KNOWLEDGE_REQUEST
+#   [skill_request_notice:<skill>]     why a skill_request brought no skill text
+# Text before the first marker line, or a context with none, is one plain section.
+_SKILL_SECTION = "skill_prompt"
+_KNOWLEDGE_SECTION = "knowledge_answer"
+_NOTICE_SECTION = "skill_request_notice"
+_SECTION_MARKER = re.compile(
+    r"^\[(skill_prompt|knowledge_answer|skill_request_notice)(?::([^\]\r\n]*))?\][ \t]*\r?$",
+    re.MULTILINE,
+)
+
+
+def skill_section(key: str, rendered: str) -> str:
+    """A grounded-context section carrying a skill a skill_request delivered."""
+    return f"[{_SKILL_SECTION}:{key}]\n{str(rendered).strip()}"
+
+
+def knowledge_section(answer: str) -> str:
+    """A grounded-context section carrying a NotebookLM answer."""
+    return f"[{_KNOWLEDGE_SECTION}]\n{str(answer).strip()}"
+
+
+def notice_section(skill: str, text: str) -> str:
+    """A grounded-context section saying why a skill_request brought no skill text."""
+    label = f":{skill}" if skill else ""
+    return f"[{_NOTICE_SECTION}{label}]\n{str(text).strip()}"
+
+
+def compose_grounded_context(sections: list[str]) -> str:
+    """Join grounded-context sections into the text injected under Grounded Context."""
+    return "\n\n".join(str(s).strip("\n") for s in sections if str(s).strip())
+
+
+def _grounded_sections(text: Any) -> list[tuple[str, str, str]]:
+    """Split grounded context at its marker lines into (kind, name, section text).
+
+    The section text keeps its marker line. A plain section has kind "".
+    """
+    text = str(text or "")
+    matches = list(_SECTION_MARKER.finditer(text))
+    if not matches:
+        return [("", "", text)] if text.strip() else []
+    sections: list[tuple[str, str, str]] = []
+    head = text[:matches[0].start()]
+    if head.strip():
+        sections.append(("", "", head.rstrip()))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.append((match.group(1), (match.group(2) or "").strip(),
+                         text[match.start():end].rstrip()))
+    return sections
+
+
+def bound_skill_text(text: str, cap: int) -> tuple[str, bool]:
+    """Cut skill text to at most cap characters, closing any block the cut leaves open."""
+    return _bound_text(text, cap)
 
 # Markdown blocks that would swallow a truncation notice placed after a cut through them
 # (CommonMark 0.31). A fenced code block opens and closes on a run of three or more
@@ -305,41 +418,40 @@ def _inline_skill_delivery(extra_context: dict | None) -> bool:
     return str(value or "").strip().lower() == SKILL_DELIVERY_INLINE
 
 
-def _skill_request_note(extra_context: dict | None) -> str:
-    """The sentence that tells an inline-delivery agent how, or whether, to request a skill.
+def _skill_request_terms(extra_context: dict | None) -> tuple[str, str]:
+    """How, or whether, an inline-delivery agent can request a skill from this exchange.
 
-    The skill_request hint when MAS answers a request from this exchange; otherwise a
-    sentence that says no further skill text can reach the agent, so the prompt never
-    promises a delivery that will not happen. An explicit SKILL_REQUEST_KEY wins over
-    what is inferred.
+    Returns (note, arrival). The note is the sentence the prompt gives the agent, chosen
+    by DISPATCH_KIND_KEY and SKILL_REQUESTS_LEFT_KEY. Arrival completes "it arrives ..."
+    in the notices of the inline block, and is "" when MAS answers no request from this
+    exchange, so no prompt promises a delivery that will not happen. An explicit
+    SKILL_REQUEST_KEY of False wins over the dispatch kind.
     """
     context = extra_context or {}
     if SKILL_REQUEST_KEY in context:
         value = context[SKILL_REQUEST_KEY]
         if isinstance(value, str):
             value = value.strip().lower() not in ("", "0", "false", "no", "off")
-        return SKILL_REQUEST_HINT if value else NO_SKILL_REQUEST
-    if "injected_consultation_question" in context:
-        return NO_SKILL_REQUEST_CONSULTATION
-    if threading.current_thread().name.startswith(_PARALLEL_THREAD_PREFIX):
-        return NO_SKILL_REQUEST_PARALLEL
-    return SKILL_REQUEST_HINT
-
-
-def _requested_skill_name(grounded: Any) -> str:
-    """The skill a skill_request delivered in this grounded context, or "".
-
-    The orchestration loop puts "[skill_prompt:<name>]" and the rendered skill prompt at
-    the start of injected_grounded_context. Only a prompt rendered from a readable
-    SKILL.md counts, never a denial or a knowledge answer.
-    """
-    from core.engine.skill_bridge import SKILL_PROMPT_PREAMBLE
-
-    text = str(grounded or "").lstrip()
-    match = _SKILL_PROMPT_MARKER.match(text)
-    if match is None or not text[match.end():].startswith(SKILL_PROMPT_PREAMBLE):
-        return ""
-    return match.group(1).strip()
+        if not value:
+            return NO_SKILL_REQUEST, ""
+    kind = str(context.get(DISPATCH_KIND_KEY) or DISPATCH_MAIN).strip().lower()
+    if kind not in DISPATCH_KINDS:
+        return NO_SKILL_REQUEST, ""
+    default = 1 if kind == DISPATCH_CONSULTATION else SKILL_REQUEST_LIMIT
+    try:
+        left = int(context.get(SKILL_REQUESTS_LEFT_KEY, default))
+    except (TypeError, ValueError):
+        left = default
+    if kind == DISPATCH_CONSULTATION:
+        if left > 0:
+            return SKILL_REQUEST_HINT_CONSULTATION, "when MAS asks you again in this consultation"
+        return NO_SKILL_REQUEST_CONSULTATION, ""
+    if left <= 0:
+        return SKILL_REQUEST_LIMIT_REACHED, ""
+    if kind == DISPATCH_PARALLEL:
+        return (f"{SKILL_REQUEST_HINT_PARALLEL} {_skill_request_limit_note(left)}",
+                "when MAS dispatches you again on this task")
+    return f"{SKILL_REQUEST_HINT} {_skill_request_limit_note(left)}", "on your next step"
 
 
 def _columns(whitespace: str, start: int = 0) -> int:
@@ -701,7 +813,7 @@ class PromptAssembler:
         recommendations: list,
         *,
         delivered: list[str] | None = None,
-        requestable: bool = True,
+        arrival: str = "on your next step",
     ) -> tuple[str, dict]:
         """Inline the text of each REQUIRED skill the agent is authorized for.
 
@@ -713,8 +825,8 @@ class PromptAssembler:
         notice naming the file that holds the rest, so the truncation is never silent.
         All bodies together are bounded by INLINE_TOTAL_CHAR_CAP: a skill that would
         cross it is named with its file, in policy order, so the first REQUIRED skills
-        are the ones inlined. Both notices offer a skill_request only when
-        ``requestable`` says MAS answers one from this exchange. Never raises.
+        are the ones inlined. Both notices offer a skill_request only when ``arrival``
+        says when MAS would deliver it, so "" offers none. Never raises.
         """
         record: dict[str, Any] = {
             "mode": SKILL_DELIVERY_INLINE,
@@ -797,7 +909,7 @@ class PromptAssembler:
                 elif reason == "over_total_cap":
                     request = (
                         f' Request it with `"skill_request": {{"name": "{name}"}}` and '
-                        "it arrives on your next step." if requestable else ""
+                        f"it arrives {arrival}." if arrival else ""
                     )
                     skipped.append(
                         f"- `{name}`: not included, because the skill text already in "
@@ -816,8 +928,9 @@ class PromptAssembler:
             section = [f"### Skill: {name}", f"Source: {skill_path}", "", shown]
             if truncated:
                 request = (
-                    f" A skill_request for `{name}` brings the whole file on your next "
-                    "step." if requestable else ""
+                    f" A skill_request for `{name}` brings up to "
+                    f"{REQUESTED_SKILL_CHAR_CAP:,} characters of it {arrival}."
+                    if arrival else ""
                 )
                 section += [
                     "",
@@ -854,25 +967,57 @@ class PromptAssembler:
             lines.extend(skipped)
         return "\n".join(lines).strip() + "\n", record
 
-    def _delivered_skill(self, agent_id: str, extra_context: dict | None) -> tuple[str, bool]:
-        """The skill a skill_request delivered in this prompt's grounded context.
+    def _delivered_skills(self, agent_id: str, grounded: Any) -> tuple[list[str], str, str]:
+        """The skills that skill_requests delivered in this prompt's grounded context.
 
-        Returns (folder key, or "" when the context carries no delivered skill, and
-        whether the agent is denied it). The orchestration loop answers a request only
-        for the agent that sent it, but parallel sub-agents share one pending slot, so
-        the text can reach another agent; SKILL_ACCESS still decides who may read it.
-        A bridge that fails denies nothing, so the context is kept as the caller sent it.
+        Returns the folder keys delivered, the grounded context the agent may read, and
+        the text of the delivered skill sections. Only a section rendered from a readable
+        SKILL.md counts as delivered, never a notice or a knowledge answer. The
+        orchestration loop keys requested text to the agent that asked for it, and
+        SKILL_ACCESS still decides: a section for a skill the agent is not authorized
+        for is dropped and the rest of the context kept. A bridge that fails denies
+        nothing, so the context is kept as the caller sent it.
         """
-        name = _requested_skill_name((extra_context or {}).get("injected_grounded_context"))
-        if not name:
-            return "", False
+        from core.engine.skill_bridge import SKILL_PROMPT_PREAMBLE
+
+        text = str(grounded or "")
+        sections = _grounded_sections(text)
+        if not any(kind == _SKILL_SECTION for kind, _name, _text in sections):
+            return [], text, ""
         try:
             bridge = self._bridge()
-            skill = bridge.get_skill(name)
-            key = skill.key if skill is not None else name
-            return key, not bridge.is_skill_authorized(agent_id, key)
         except Exception:
-            return name, False
+            bridge = None
+        delivered: list[str] = []
+        kept: list[str] = []
+        skill_parts: list[str] = []
+        dropped = False
+        for kind, name, section in sections:
+            body = section.split("\n", 1)[1].lstrip() if "\n" in section else ""
+            if kind != _SKILL_SECTION or not name or not body.startswith(SKILL_PROMPT_PREAMBLE):
+                kept.append(section)
+                continue
+            key, denied = name, False
+            if bridge is not None:
+                try:
+                    skill = bridge.get_skill(name)
+                    key = skill.key if skill is not None else name
+                    denied = not bridge.is_skill_authorized(agent_id, key)
+                except Exception:
+                    key, denied = name, False
+            if denied:
+                logger.warning(
+                    "Skill %r delivered to %s, which is not authorized for it; dropped "
+                    "from the prompt.", key, agent_id,
+                )
+                dropped = True
+                continue
+            kept.append(section)
+            skill_parts.append(section)
+            if key not in delivered:
+                delivered.append(key)
+        readable = compose_grounded_context(kept) if dropped else text
+        return delivered, readable, "\n\n".join(skill_parts)
 
     def _skill_recommendations(
         self,
@@ -916,13 +1061,14 @@ class PromptAssembler:
         recommendations: list | None = None,
         inlined: list[str] | None = None,
         delivered: list[str] | None = None,
+        request_note: str = "",
     ) -> str:
         """Render phase-aware required/recommended skill triggers.
 
         ``inlined`` names the skills whose text the inline block carries and
-        ``delivered`` the one a skill_request put under Grounded Context, so the
-        triggers claim included text for those alone. In inline mode the block ends
-        with the sentence _skill_request_note picks for this exchange.
+        ``delivered`` those skill_requests put under Grounded Context, so the triggers
+        claim included text for those alone. In inline mode the block ends with
+        ``request_note``, the sentence _skill_request_terms picks for this exchange.
         """
         try:
             from core.engine.skill_trigger import SkillTriggerPolicy
@@ -935,7 +1081,7 @@ class PromptAssembler:
                 inline=_inline_skill_delivery(extra_context),
                 inlined=inlined,
                 delivered=delivered,
-                request_note=_skill_request_note(extra_context),
+                request_note=request_note,
             )
         except Exception:
             return ""
@@ -1087,7 +1233,9 @@ class PromptAssembler:
             if authorized_skills else "(none)"
         )
         inline_skills = _inline_skill_delivery(extra_context)
-        request_note = _skill_request_note(extra_context) if inline_skills else ""
+        request_note, arrival = (
+            _skill_request_terms(extra_context) if inline_skills else ("", "")
+        )
         recommendations = self._skill_recommendations(state, extra_context)
         required_skills = [
             str(rec.skill) for rec in recommendations if getattr(rec, "required", False)
@@ -1095,17 +1243,9 @@ class PromptAssembler:
         # A skill an earlier skill_request asked for arrives as grounded context. The
         # blocks below count its text as included, so none of them denies it or offers
         # to request it again. An agent the skill is not granted to never sees it.
-        delivered_key, delivered_denied = self._delivered_skill(
-            canonical_agent_id, extra_context
+        delivered_names, readable_grounded, delivered_text = self._delivered_skills(
+            canonical_agent_id, (extra_context or {}).get("injected_grounded_context")
         )
-        dropped_keys: set[str] = set()
-        if delivered_denied:
-            logger.warning(
-                "Skill %r delivered to %s, which is not authorized for it; dropped "
-                "from the prompt.", delivered_key, canonical_agent_id,
-            )
-            dropped_keys.add("injected_grounded_context")
-        delivered_names = [delivered_key] if delivered_key and not delivered_denied else []
         # Inline delivery only: REQUIRED skill text goes in a block of its own, after the
         # stable prefix like every other injected block (prompt-token-contract.md). It is
         # built first, because the blocks that describe it must name what it carries.
@@ -1117,14 +1257,15 @@ class PromptAssembler:
                     canonical_agent_id,
                     recommendations,
                     delivered=delivered_names,
-                    requestable=request_note == SKILL_REQUEST_HINT,
+                    arrival=arrival,
                 )
             )
         inlined_names = [
             str(item["skill"]) for item in (delivery_record or {}).get("inlined", [])
         ]
         context["injected_recommended_skill_use"] = self._build_recommended_skill_block(
-            state, extra_context, recommendations, inlined_names, delivered_names
+            state, extra_context, recommendations, inlined_names, delivered_names,
+            request_note,
         )
         skill_access_block = self._build_skill_access_block(
             canonical_agent_id,
@@ -1155,9 +1296,11 @@ class PromptAssembler:
             # The delivery flags steer assembly; they are not prompt content.
             context.update({
                 key: value for key, value in extra_context.items()
-                if key not in (SKILL_DELIVERY_KEY, SKILL_REQUEST_KEY)
-                and key not in dropped_keys
+                if key not in (SKILL_DELIVERY_KEY, SKILL_REQUEST_KEY, DISPATCH_KIND_KEY,
+                               SKILL_REQUESTS_LEFT_KEY)
             })
+            if "injected_grounded_context" in extra_context:
+                context["injected_grounded_context"] = readable_grounded
 
         prompt = _fill_placeholders(template, context)
         prompt = self._append_missing_context_sections(prompt, template, context)
@@ -1174,9 +1317,7 @@ class PromptAssembler:
         skill_text = skill_access_block
         skill_text += context.get("injected_recommended_skill_use", "")
         skill_text += context.get("injected_inlined_skills", "")
-        if delivered_names:
-            # The whole grounded context is the delivered skill prompt.
-            skill_text += str(context.get("injected_grounded_context") or "")
+        skill_text += delivered_text
         memory_text = "\n".join(
             part for part in (graph_context, sqlite_ctx) if part
         )

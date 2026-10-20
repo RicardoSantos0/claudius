@@ -35,8 +35,8 @@ tasks still get different models, because the role's tier is routing policy in
 `llm.agent_overrides`: planning and judgement roles use `reasoning`, clerical
 roles `economy`, delivery engineers you add should use `standard`, and critical
 agents escalate to `reasoning`. The selected surface's catalog turns that tier
-into a concrete model. On Claude the reasoning tier is Opus 5.5 with Fable 5.1
-as a backup only for unavailability or refusal; Codex, Copilot, Antigravity,
+into a concrete model. On Claude the reasoning tier is Opus 5.5 with Opus 5 as
+the fallback for unavailability or refusal (Fable only on explicit request); Codex, Copilot, Antigravity,
 OpenCode and local surfaces map the same tiers to their own models.
 
 ## 2. Register the agent

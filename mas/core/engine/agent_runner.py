@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_PROVIDER = "anthropic"
-_MAX_TOKENS_DEFAULT = 1024
+_MAX_TOKENS_DEFAULT = 16000
 _LIVE_RUN_REQUIRED = (
     "Live execution is mandatory. Configure ANTHROPIC_API_KEY and the anthropic "
     "package before running MAS agents."
@@ -227,7 +227,7 @@ class _AnthropicAdapter(ProviderAdapter):
         self, client, *, agent_id, prompt, system_prompt, model, max_tokens,
         reasoning_effort=None,
     ) -> dict:
-        _ = agent_id, reasoning_effort
+        _ = agent_id
         kwargs: dict = {
             "model": model,
             "max_tokens": max_tokens,
@@ -235,6 +235,9 @@ class _AnthropicAdapter(ProviderAdapter):
         }
         if system_prompt:
             kwargs["system"] = system_prompt
+        if reasoning_effort:
+            # Current Claude models think adaptively; effort sets how much.
+            kwargs["output_config"] = {"effort": reasoning_effort}
         try:
             msg = client.messages.create(**kwargs)
             if str(getattr(msg, "stop_reason", "") or "").lower() == "refusal":
@@ -246,7 +249,13 @@ class _AnthropicAdapter(ProviderAdapter):
                     "error": "provider returned refusal stop reason",
                     "error_type": "refusal",
                 }
-            text = msg.content[0].text if msg.content else ""
+            # Thinking blocks come before the answer on current models; a block
+            # without a type is treated as text.
+            text = "".join(
+                getattr(block, "text", "") or ""
+                for block in (msg.content or [])
+                if getattr(block, "type", "text") == "text"
+            )
             usage = _usage_metadata(msg, msg.usage)
             tp = int(usage.get("tokens_prompt", 0))
             tc = int(usage.get("tokens_completion", 0))

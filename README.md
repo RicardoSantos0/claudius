@@ -518,8 +518,9 @@ MAS routes a semantic profile before choosing a vendor model. Planning, review,
 and evaluation default to `reasoning`; bounded execution defaults to `economy`.
 High-risk, critical-agent, and retry paths escalate before any economy assignment.
 Planning and judgement roles retain `reasoning` in every phase. On Claude,
-the ordered reasoning route is Opus 5.5 first and Fable 5.1 only for declared
-unavailability/exclusion or refusal. On OpenAI and Codex it is GPT-6 Astra
+the ordered reasoning route is Opus 5.5 first and Opus 5 only for declared
+unavailability/exclusion or refusal; Fable runs only when asked for explicitly,
+because it draws on usage credits. On OpenAI and Codex it is GPT-6 Astra
 first and GPT-6.1 Sol on the same terms.
 
 `mas/system_config.yaml` ships interchangeable Anthropic, OpenAI, Gemini/LiteLLM
@@ -540,7 +541,7 @@ ordered candidate list and `dispatch_id`.
 | Surface | Route behavior |
 |---------|----------------|
 | Autonomous `mas run` | Engine-enforced provider/model route using the selected catalog |
-| Claude Code | Applies the Anthropic envelope model; reasoning is Opus 5.5 first with a Fable 5.1 backup |
+| Claude Code | Applies the Anthropic envelope model; reasoning is Opus 5.5 first with an Opus 5 fallback |
 | Codex | Launches `--profile mas-<tier> -m <model>` with the tier's reasoning effort |
 | Antigravity | Launches `agy --model <id>`; replaces the Gemini CLI |
 | OpenCode | Emits the selected `-m provider/model` launch arguments |

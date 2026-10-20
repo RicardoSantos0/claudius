@@ -565,12 +565,17 @@ class SkillBridge:
         return entry
 
     def render_skill_prompt(self, agent_id: str, skill_name: str, query: str,
-                            project_id: str = "") -> str:
+                            project_id: str = "", *, char_cap: int | None = None) -> str:
         """
         Render a skill invocation as an executable prompt block.
         Returns a markdown block the agent can act on, or an error string.
         Never raises. When the SKILL.md cannot be read the result says so, rather than
         standing the description in for the procedure.
+
+        ``char_cap`` bounds the skill text for a prompt (the orchestration loop passes
+        REQUESTED_SKILL_CHAR_CAP). The body is then included without its frontmatter,
+        and a body longer than the cap is cut, closing any block the cut leaves open,
+        and followed by a notice that names the file holding the rest.
         """
         skill = self.get_skill(skill_name)
         key = skill.key if skill is not None else skill_name
@@ -582,6 +587,16 @@ class SkillBridge:
             skill_text = self.read_skill_text(skill)
         except (OSError, UnicodeDecodeError) as exc:
             return f"[skill unreadable: {key!r}: {exc}]"
+        if char_cap is not None:
+            from core.engine.prompt_assembler import bound_skill_text
+            body = strip_frontmatter(skill_text).strip()
+            shown, truncated = bound_skill_text(body, char_cap)
+            skill_text = shown
+            if truncated:
+                skill_text += (
+                    f"\n\n[Truncated: showing {len(shown):,} of {len(body):,} characters "
+                    f"of this skill. The full text is in {os.path.abspath(str(skill.path))}.]"
+                )
         return (
             f"{SKILL_PROMPT_PREAMBLE}\n\n"
             f"# Skill\n{skill_text}\n\n"
