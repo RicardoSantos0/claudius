@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -652,8 +652,8 @@ requires-dist = [
     { name = "chromadb", marker = "extra == 'vector'", specifier = ">=0.5,<1.0.0" },
     { name = "click", specifier = ">=8.5.0" },
     { name = "idna", specifier = ">=3.15" },
-    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.94.3" },
-    { name = "litellm", marker = "extra == 'providers'", specifier = ">=1.94.3" },
+    { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.106.2" },
+    { name = "litellm", marker = "extra == 'providers'", specifier = ">=1.106.2" },
     { name = "mcp", marker = "extra == 'server'", specifier = ">=1.30.0,<2.0.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=2.51.0" },
     { name = "openai", marker = "extra == 'providers'", specifier = ">=2.51.0" },
@@ -1502,7 +1502,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.104.2"
+version = "1.106.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1523,16 +1523,17 @@ dependencies = [
     { name = "pyyaml" },
     { name = "tiktoken" },
     { name = "tokenizers" },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/dc/d8597453971ad7ed012389c6197641a01f578f7f86c95d5b94e10c5331ea/litellm-1.104.2.tar.gz", hash = "sha256:f766de3dd38b977ca70f17f409df04c0a9a3e90aed82582a965d348b6e2fe399", size = 19706913, upload-time = "2026-10-08T08:35:09.701Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/54/4b/0f42182e4a3f957e8b5d8bdc2522779092da973bef7a3492c8e6a3409764/litellm-1.106.2.tar.gz", hash = "sha256:9f0e770cb007c8c6e78917ad7b5c4f059f7bdc4a3606f854831780ea53fd9e2d", size = 21431422, upload-time = "2026-10-21T10:44:51.337Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/9a/36e3ea2ad9d79df1d9aa978dde42323321b339e42c71a0d0b9c9a5179dc7/litellm-1.104.2-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:0d43c16d93e7c47cf0a4028eeaa21f95ba677d0828d32be4af5363abdbcf109d", size = 36210138, upload-time = "2026-10-08T08:34:44.183Z" },
-    { url = "https://files.pythonhosted.org/packages/2e/b1/fc43dfd69f08a328f4149d507ac03cd048d147b3577d9e5335adb400a719/litellm-1.104.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:b3c600700b677799a553f435a2a2b724c01516215acbac873d1b056570bc0a39", size = 34665058, upload-time = "2026-10-08T08:34:47.93Z" },
-    { url = "https://files.pythonhosted.org/packages/69/17/6bf3bee629fbdbe4da4c8940175a48afb0a544f0c4ce97ce316a2c6d49ee/litellm-1.104.2-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f6b8550508b9e0f67b3d64bafad245641fa3049d4c5b85c26a6b8e175e00a3cd", size = 35930177, upload-time = "2026-10-08T08:34:51.595Z" },
-    { url = "https://files.pythonhosted.org/packages/28/45/0e11648a403763c7346d41def733784aee8c1d9d39386ababf72f5ad93b0/litellm-1.104.2-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:416c3538ea78b08d637ec45564a919232aa2093e73adb9dd7752f7cff2ec585e", size = 36850695, upload-time = "2026-10-08T08:34:55.255Z" },
-    { url = "https://files.pythonhosted.org/packages/d0/f8/10ed18ee972504118c3ec4fcc9dc834f5f52bbfb08a48fbdf938046de38b/litellm-1.104.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1899561118442965725c88338986b249324705b1725474fae6fb17542964e58a", size = 36023939, upload-time = "2026-10-08T08:34:58.881Z" },
-    { url = "https://files.pythonhosted.org/packages/9c/3d/9966a04f68841c878c5090b6b9c02cb277f9477285c34271e91859158d09/litellm-1.104.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:23a17188c2478b541ea14e8c7fc9d4ad476e99cf8c3a90d3d2bf5a59ccfa7e2f", size = 36989124, upload-time = "2026-10-08T08:35:02.387Z" },
-    { url = "https://files.pythonhosted.org/packages/14/32/3e04203ab2b002233a71935d7d5479f54354c2c83267722ca78f238367f1/litellm-1.104.2-cp310-abi3-win_amd64.whl", hash = "sha256:3aa3390077daf8f9fd39a65ec768d29754f09b2e10a2b2aa369b5c365ed7596c", size = 37627847, upload-time = "2026-10-08T08:35:06.179Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/47/1038af80d9831972fae8712a890c30252f51c514c092d83e0f1330bb1fa1/litellm-1.106.2-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:bf6f13445bb59d8d02131bbc1fb57161d1ae629bec65dc66f9add4c09fb6994a", size = 36283395, upload-time = "2026-10-21T10:44:22.902Z" },
+    { url = "https://files.pythonhosted.org/packages/51/fc/15e44b2a222dfda71e0aff107fccfb49b06a4695fae0eb6867aff84f7e1d/litellm-1.106.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:cc778d01ed65a8dd57d5211d581ec237e06df239a09c3d573ace33e0feea76c9", size = 35263059, upload-time = "2026-10-21T10:44:32.664Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/a8/f21d7fd8f7ffa6ebacefbedfb6268430e2b55ce9b2f33a36ac0295ccd500/litellm-1.106.2-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:34bfdc26c2c075726eda59ec0675e2a8a67b6e59a03980def7ef7651b849141a", size = 35827639, upload-time = "2026-10-21T10:44:35.553Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/30/4a38c22181ef7169b6c044b8294f2e5b06236aeeccfbe57c2f0e85a51bfe/litellm-1.106.2-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:cb1a2a1e55a4a8350ae2167525dc0d06f59b078cd685fb3e0f5419f02da5420e", size = 36789555, upload-time = "2026-10-21T10:44:38.879Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/76/e7ca210ad574f5321c162f2b27f8674c260e0857323a9991c4d3765ce8f1/litellm-1.106.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:ce18971e2bb2aa58ef8efae1cd12da1248e1c2e5ae3cf5903bfb9d563bb34d9d", size = 35914468, upload-time = "2026-10-21T10:44:42.268Z" },
+    { url = "https://files.pythonhosted.org/packages/22/03/95518dfb58e29c45ab40a7bc3d1d76509d09011172c380145fc9e900a214/litellm-1.106.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:32e567ee53c812e36f79158ec280c8850973f84a9e5fdef50d31ca09306d148c", size = 36901860, upload-time = "2026-10-21T10:44:45.807Z" },
+    { url = "https://files.pythonhosted.org/packages/48/7a/a17de89184b5365980c3eb7d58176ae5a7e34538e56b942c833ff7f523b9/litellm-1.106.2-cp310-abi3-win_amd64.whl", hash = "sha256:836ab19110504ad7ba71d8ce73af6b9d1cf1dc6ffda2b49ebc1a51e348f754bc", size = 37619702, upload-time = "2026-10-21T10:44:48.564Z" },
 ]
 
 [[package]]
