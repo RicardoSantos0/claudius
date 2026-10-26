@@ -48,13 +48,13 @@ server = [
     "mcp>=1.30.0,<2.0.0",
 ]
 openai = [
-    "openai>=2.51.0",
+    "openai>=3.37.0",
 ]
 litellm = [
     "litellm>=1.104.2",
 ]
 providers = [
-    "openai>=2.51.0",
+    "openai>=3.37.0",
     "litellm>=1.104.2",
 ]
 
