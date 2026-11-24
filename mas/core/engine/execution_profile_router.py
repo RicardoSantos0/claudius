@@ -466,8 +466,13 @@ class ExecutionProfileRouter:
         selection: RouteSelection,
         *,
         prompt_metadata: Mapping[str, Any] | None = None,
+        served_handoff_id: str | None = None,
     ) -> str:
-        """Record routing provenance with the existing decision event convention."""
+        """Record routing provenance with the existing decision event convention.
+
+        `served_handoff_id` is the pending handoff this dispatch serves; ingest
+        against the dispatch completes it (prop-002).
+        """
         if not project_id:
             return ""
         policy = self._audit_persistence_policy()
@@ -476,6 +481,8 @@ class ExecutionProfileRouter:
             from core.engine.event_recorder import EventRecorder
 
             persisted_selection = selection.to_dict()
+            if served_handoff_id:
+                persisted_selection["served_handoff_id"] = served_handoff_id
             stable_prefix = (
                 (prompt_metadata or {}).get("stable_prefix", {}) or {}
             )

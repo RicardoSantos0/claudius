@@ -303,6 +303,107 @@ def expire_stale_handoffs(
 
 
 # ---------------------------------------------------------------------------
+# prop-002 — stale delegation: pending handoffs nobody answered
+# ---------------------------------------------------------------------------
+
+STALE_DELEGATION_DAYS = 14
+_DECISION_TIME_KEYS = ("recorded_at", "timestamp", "decided_at", "created_at", "date")
+
+
+def _parse_time(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _pending_status(handoff: dict) -> str:
+    acceptance = handoff.get("acceptance")
+    if isinstance(acceptance, dict):
+        return str(acceptance.get("status") or "")
+    return str(handoff.get("acc") or handoff.get("status") or "")
+
+
+def stale_delegations(
+    state: dict,
+    now: datetime | None = None,
+    max_age_days: int = STALE_DELEGATION_DAYS,
+) -> list[dict]:
+    """Pending handoffs older than `max_age_days` or older than the latest decision.
+
+    Each entry carries the handoff id, recipient, task text, age in days and the
+    number of decisions recorded since the handoff was created.
+    """
+    now = now or datetime.now(timezone.utc)
+    decision_times = []
+    for decision in (state.get("decisions", {}) or {}).get("decision_log", []) or []:
+        if isinstance(decision, dict):
+            for key in _DECISION_TIME_KEYS:
+                parsed = _parse_time(decision.get(key))
+                if parsed:
+                    decision_times.append(parsed)
+                    break
+    latest_decision = max(decision_times, default=None)
+    stale: list[dict] = []
+    for handoff in (state.get("workflow", {}) or {}).get("handoff_history", []) or []:
+        if _pending_status(handoff) != "pending":
+            continue
+        created = _parse_time(handoff.get("timestamp") or handoff.get("ts"))
+        if created is None:
+            continue
+        age_days = (now - created).days
+        since = sum(1 for t in decision_times if t > created)
+        if age_days > max_age_days or (latest_decision and latest_decision > created):
+            stale.append({
+                "handoff_id": handoff.get("handoff_id") or handoff.get("id"),
+                "to_agent": handoff.get("to_agent") or handoff.get("to"),
+                "task": handoff.get("task_description") or handoff.get("task") or "",
+                "age_days": age_days,
+                "decisions_since": since,
+            })
+    return stale
+
+
+def format_stale_delegation_block(stale: list[dict]) -> list[str]:
+    """Plain-text lines for `mas resume`, `mas status` and CHECKPOINT.md."""
+    if not stale:
+        return []
+    lines = [f"Stale delegation ({len(stale)} pending handoff(s) older than "
+             f"{STALE_DELEGATION_DAYS} days or than the latest decision):"]
+    for entry in stale:
+        lines.append(
+            f"  {entry['handoff_id']} to {entry['to_agent']}, {entry['age_days']} days old, "
+            f"{entry['decisions_since']} decision(s) since: {entry['task']}"
+        )
+    lines.append("Complete, expire (`mas pending <project> --expire-older-than <days>`) "
+                 "or re-delegate each one.")
+    return lines
+
+
+def select_expirable_handoffs(
+    handoffs: list[dict],
+    older_than_days: int,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Pending handoffs older than `older_than_days`; accepted and completed ones never match."""
+    now = now or datetime.now(timezone.utc)
+    chosen = []
+    for handoff in handoffs:
+        if _pending_status(handoff) != "pending":
+            continue
+        created = _parse_time(handoff.get("timestamp") or handoff.get("ts"))
+        if created is not None and (now - created).days >= older_than_days:
+            chosen.append(handoff)
+    return chosen
+
+
+# ---------------------------------------------------------------------------
 # G1 — execution-entry task-board gate
 # (proj-YYYYMMDD-NNN-mas-manual-loop-guardrails)
 # ---------------------------------------------------------------------------

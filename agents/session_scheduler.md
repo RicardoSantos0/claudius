@@ -124,7 +124,7 @@ The file is excluded from git via `mas/projects/` in `.gitignore`.
 All handoff payloads must include `_v` and `s` fields:
 ```yaml
 _v: "1.0"
-s: "task:complete"          # or phase:complete, scribe:recorded, etc.
+s: "task:complete"          # this handoff is done and the phase continues; phase:complete ends the phase
 art:
   - path/to/artifact.yaml   # omit if no artifacts
 rsn: >                       # optional, max 100 words

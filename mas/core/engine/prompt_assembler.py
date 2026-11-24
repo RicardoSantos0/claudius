@@ -310,6 +310,22 @@ for _c in ("risk_advisor", "quality_advisor", "devils_advocate",
            "domain_expert", "efficiency_advisor"):
     STATE_PROJECTIONS[_c] = CONSULTANT_PROJECTION
 
+# Delivery agents (every roster agent not listed above) read the project's identity,
+# scope and acceptance criteria, so a dispatch never starts with an empty state.
+DELIVERY_PROJECTION = [
+    "core_identity",
+    "project_definition.scope",
+    "project_definition.acceptance_criteria",
+]
+
+
+def _projection_paths(agent_id: str) -> list[str]:
+    """Listed agents keep their projection; any other roster agent gets the delivery one."""
+    if agent_id in STATE_PROJECTIONS:
+        return STATE_PROJECTIONS[agent_id]
+    is_roster = any((d / f"{agent_id}.md").is_file() for d in (ROOT.parent / "agents", AGENTS_DIR))
+    return DELIVERY_PROJECTION if is_roster else []
+
 
 def _get_nested(data: dict, path: str) -> Any:
     """Get a value from nested dict by dot-notation path."""
@@ -328,7 +344,7 @@ def _project_state(state: dict, agent_id: str) -> dict:
     the agent is authorized to read.
     """
     canonical_agent_id = normalize_agent_id(agent_id) or agent_id
-    projection_paths = STATE_PROJECTIONS.get(canonical_agent_id, [])
+    projection_paths = _projection_paths(canonical_agent_id)
     projected = {}
 
     for path in projection_paths:
@@ -1161,6 +1177,9 @@ class PromptAssembler:
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
         template = self.load_template(canonical_agent_id)
         stable_prefix = template.rstrip()
+        rules_block = self._standing_rules_block(state, canonical_agent_id)
+        if rules_block:
+            stable_prefix = f"{stable_prefix}\n\n{rules_block}"
         projected = _project_state(state, canonical_agent_id)
         compact = _compact_projection(projected)
 
@@ -1182,7 +1201,8 @@ class PromptAssembler:
             "\n\n## Output Format\n"
             "For all agent-to-agent outputs (handoff payloads, consultation responses), "
             "use MAS wire protocol v1.0:\n"
-            "- Status: compact code, e.g. `\"s\": \"task:complete\"`\n"
+            "- Status: compact code, e.g. `\"s\": \"task:complete\"` (this handoff is done, "
+            "the phase continues) or `\"s\": \"phase:complete\"` (ends the phase)\n"
             "- Version: `\"_v\": \"1.0\"` in every payload\n"
             "- Omit empty lists and null fields\n"
             "- Optional reasoning (`rsn`): max 100 words\n"
@@ -1303,6 +1323,8 @@ class PromptAssembler:
                 context["injected_grounded_context"] = readable_grounded
 
         prompt = _fill_placeholders(template, context)
+        if rules_block:
+            prompt = f"{prompt.rstrip()}\n\n{rules_block}\n"
         prompt = self._append_missing_context_sections(prompt, template, context)
         if ("{injected_authorized_skills}" not in template and
                 "{injected_authorized_skill_names}" not in template):
@@ -1361,6 +1383,24 @@ class PromptAssembler:
             # the provider call has returned without error.
             self.last_prompt_metadata["skill_delivery"] = delivery_record
         return prompt
+
+    @staticmethod
+    def _standing_rules_block(state: dict, agent_id: str) -> str:
+        """Standing Rules section for this agent, from the project's register.
+
+        A malformed register raises StandingRulesError: a broken rule must not
+        silently vanish from the envelope.
+        """
+        project_id = state.get("core_identity", {}).get("project_id", "")
+        if not project_id:
+            return ""
+        from core.engine import standing_rules
+        from core.utils.config import resolve_project_dir
+        register = (resolve_project_dir(project_id, projects_root=ROOT / "projects")
+                    / standing_rules.REGISTER_RELATIVE)
+        rules = standing_rules.rules_for_agent(standing_rules.load_register(register), agent_id)
+        return standing_rules.render_block(
+            rules, f"projects/{project_id}/{standing_rules.REGISTER_RELATIVE.as_posix()}")
 
     @staticmethod
     def _memory_query(state: dict) -> str:
@@ -1502,4 +1542,4 @@ class PromptAssembler:
     def get_state_projection(self, agent_id: str) -> list[str]:
         """Return the list of state paths this agent is authorized to read."""
         canonical_agent_id = normalize_agent_id(agent_id) or agent_id
-        return STATE_PROJECTIONS.get(canonical_agent_id, [])
+        return _projection_paths(canonical_agent_id)

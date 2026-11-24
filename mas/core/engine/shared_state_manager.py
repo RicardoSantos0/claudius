@@ -18,6 +18,7 @@ Usage as CLI:
     uv run python core/shared_state_manager.py show --project-id proj-001
 """
 
+import re
 import sys
 import json
 import logging
@@ -90,6 +91,42 @@ def _acceptance_matches(entry: Any, key: str) -> bool:
 _KEYED_APPEND_GUARDS: dict[str, Any] = {
     "project_definition.acceptance_criteria": _acceptance_label,
 }
+
+
+# --- ALIAS-FREE YAML (prop-014) ---
+
+class NoAliasDumper(yaml.SafeDumper):
+    """SafeDumper that never emits &id/*id anchors.
+
+    Two fields that share one list would otherwise dump as an anchor and an
+    alias, and a later hand edit of either breaks the file (22 alias lines in
+    one decision log; an alias collision once made it unparseable).
+    """
+
+    def ignore_aliases(self, data: Any) -> bool:
+        return True
+
+
+def dump_yaml(data: Any, stream=None, **kwargs: Any):
+    """yaml.dump with NoAliasDumper; every state and decision-log write uses it."""
+    return yaml.dump(data, stream, Dumper=NoAliasDumper, **kwargs)
+
+
+def _decision_ident(decision: Any) -> Any:
+    """The id a decision is known by: decision_id, else the legacy id."""
+    if isinstance(decision, dict):
+        return decision.get("decision_id") or decision.get("id")
+    return None
+
+
+def _max_numeric_decision_id(decisions: Any) -> int:
+    """Highest N among ids of the form d-N (named ids such as d-2026-foo are skipped)."""
+    highest = 0
+    for decision in decisions or []:
+        match = re.fullmatch(r"d-(\d{1,6})", str(_decision_ident(decision) or ""))
+        if match:
+            highest = max(highest, int(match.group(1)))
+    return highest
 
 
 # --- DECISION-RECORD FIELD GATE (p-005) ---
@@ -291,7 +328,7 @@ class SharedStateManager:
                 if state:
                     try:
                         with open(self.state_path, "w", encoding="utf-8") as f:
-                            yaml.dump(state, f, default_flow_style=False,
+                            dump_yaml(state, f, default_flow_style=False,
                                       allow_unicode=True, sort_keys=False)
                     except Exception as exc:
                         logger.debug("postgres state write-back to disk failed: %s", exc)
@@ -500,11 +537,27 @@ class SharedStateManager:
                 self.logger.log_violation(agent_id, field_path, self.project_id, reason)
                 return WriteResult(False, reason)
 
+        is_decision = field_path == DECISION_LOG_FIELD_PATH
+        if is_decision and isinstance(item, dict) and not _decision_ident(item):
+            item = {"decision_id": self._next_decision_id(current), **item}
+
         current.append(item)
         state[section][field] = current
         state["core_identity"]["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._save(state)
         self.logger.log_write(agent_id, field_path, self.project_id, True)
+
+        # Write-through (prop-014): the decision file and the event ledger change
+        # in the same call, so no store waits for a snapshot or a `mas sync`.
+        if is_decision:
+            try:
+                self._flush_decisions_to_disk()
+            except Exception:
+                # Both stores change or neither: undo the appended entry, re-raise.
+                current.pop()
+                self._save(state)
+                raise
+            self._record_decision_event(agent_id, item, state)
 
         # Decision-record field gate (p-005): name the canonical fields a NEW
         # decision leaves out, after the record is safely stored. Existing
@@ -525,6 +578,69 @@ class SharedStateManager:
                 return WriteResult(True, guidance=advisory)
 
         return WriteResult(True)
+
+    def _decision_log_path(self) -> Path:
+        return self.project_dir / "decisions" / "decision_log.yaml"
+
+    def _next_decision_id(self, in_state: list) -> str:
+        """Next d-NNN, above the highest numeric id in shared state and on disk."""
+        on_disk: Any = []
+        if self._decision_log_path().exists():
+            # An unreadable file raises: minting from half the data could reuse an id.
+            with open(self._decision_log_path(), encoding="utf-8") as f:
+                on_disk = yaml.safe_load(f)
+        if not isinstance(on_disk, list):
+            on_disk = []
+        highest = max(
+            _max_numeric_decision_id(in_state), _max_numeric_decision_id(on_disk)
+        )
+        return f"d-{highest + 1:03d}"
+
+    def record_decision(
+        self,
+        value: str,
+        rationale: str,
+        alternatives_considered: list[str],
+        related_to: list[str],
+        decision_id: str | None = None,
+        agent_id: str = "master_orchestrator",
+    ) -> tuple[dict, WriteResult]:
+        """Record one decision through the engine: the documented write path.
+
+        Shared by `mas decide` and the `mas_decide` MCP tool so both land the same
+        record in both stores. Returns (entry, WriteResult); on success the id is
+        the one given or the next free numeric id.
+        """
+        state = self.load()
+        phase = state.get("core_identity", {}).get("current_phase")
+        in_state = state.get("decisions", {}).get("decision_log", []) or []
+        entry = {
+            "decision_id": decision_id or self._next_decision_id(in_state),
+            "value": value,
+            "rationale": rationale,
+            "alternatives_considered": list(alternatives_considered),
+            "related_to": list(related_to),
+            "phase": phase,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        return entry, self.append(agent_id, "decisions", "decision_log", entry)
+
+    def _record_decision_event(self, agent_id: str, decision: Any, state: dict) -> None:
+        """Append decision_recorded under the key `mas sync` uses, so sync adds none."""
+        try:
+            from core.engine.event_recorder import EventRecorder
+            from core.engine.state_reconciler import _decision_key
+
+            EventRecorder().record_simple(
+                project_id=self.project_id,
+                actor=agent_id,
+                action_type="decision_recorded",
+                intent=f"Decision {_decision_ident(decision) or '(unidentified)'}",
+                phase=state.get("core_identity", {}).get("current_phase"),
+                payload={"reconcile_key": _decision_key(decision), "decision": decision},
+            )
+        except Exception as exc:
+            logger.debug("decision event recording failed (non-blocking): %s", exc)
 
     def system_append(self, section: str, field: str, item: Any) -> WriteResult:
         """Internal system append — bypasses agent authorization check for system-owned fields."""
@@ -695,15 +811,13 @@ class SharedStateManager:
         decisions = state.get("decisions", {}).get("decision_log", [])
         if not decisions:
             return
-        log_path = self.project_dir / "decisions" / "decision_log.yaml"
+        log_path = self._decision_log_path()
         log_path.parent.mkdir(parents=True, exist_ok=True)
         existing: list = []
         if log_path.exists():
-            try:
-                with open(log_path, encoding="utf-8") as f:
-                    loaded = yaml.safe_load(f)
-            except yaml.YAMLError:
-                loaded = None
+            # An unreadable file raises: rewriting it would drop disk-only entries.
+            with open(log_path, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f)
             if isinstance(loaded, list):
                 existing = loaded
             elif isinstance(loaded, dict):
@@ -715,16 +829,16 @@ class SharedStateManager:
                     existing = loaded.get("entries") or []
             else:
                 existing = []
-        existing_ids = {
-            d.get("decision_id") for d in existing if isinstance(d, dict)
-        }
+        existing_ids = {_decision_ident(d) for d in existing if _decision_ident(d)}
         new_entries = [
-            d for d in decisions if d.get("decision_id") not in existing_ids
+            d for d in decisions
+            if (_decision_ident(d) not in existing_ids if _decision_ident(d)
+                else d not in existing)
         ]
         if new_entries:
             merged = list(existing) + new_entries
             with open(log_path, "w", encoding="utf-8") as f:
-                yaml.dump(merged, f, default_flow_style=False)
+                dump_yaml(merged, f, default_flow_style=False)
 
     def cleanup_snapshots(self, keep_latest: int = 0, force: bool = False) -> list[Path]:
         """Delete shared_state_snapshot_*.yaml files for this project.
@@ -811,7 +925,7 @@ class SharedStateManager:
 
     def _save(self, state: dict) -> None:
         with open(self.state_path, "w", encoding="utf-8") as f:
-            yaml.dump(state, f, default_flow_style=False,
+            dump_yaml(state, f, default_flow_style=False,
                       allow_unicode=True, sort_keys=False)
         try:
             from core.db import upsert_shared_state

@@ -415,6 +415,14 @@ def check_project(project_id: str, projects_root: Path | None = None) -> Consist
     disk_dec = _load_yaml(pdir / "decisions" / "decision_log.yaml")
 
     findings: list[dict] = []
+    log_path = pdir / "decisions" / "decision_log.yaml"
+    if disk_dec is None and log_path.exists() and log_path.read_text(encoding="utf-8").strip():
+        findings.append({
+            "check": "decisions",
+            "direction": "unreadable",
+            "severity": "high",
+            "detail": "decisions/decision_log.yaml is not valid YAML; decisions on disk cannot be compared",
+        })
     findings += check_decision_consistency(state.get("decisions") or {}, disk_dec)
     findings += check_decision_record_quality(state.get("decisions") or {})
 

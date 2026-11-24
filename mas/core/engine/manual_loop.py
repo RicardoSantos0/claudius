@@ -32,6 +32,7 @@ class IngestResult:
     delegated_to: str | None = None   # set when a delegation handoff was created
     delegation_handoff_id: str | None = None
     delegate_error: str | None = None
+    completed_handoff_id: str | None = None  # the pending handoff this ingest answered
     closed: bool = False
     decisions: int = 0
     artifacts: int = 0
@@ -109,6 +110,7 @@ def verify_manual_dispatch(
         "source": selection.get("source"),
         "route_action_id": selection_action_id,
         "stable_prefix_sha256": selection.get("stable_prefix_sha256"),
+        "served_handoff_id": selection.get("served_handoff_id"),
     }
     if not receipt:
         return {
@@ -222,6 +224,43 @@ def verify_manual_dispatch(
     }
 
 
+_TASK_TEXT_LIMIT = 200
+
+
+def _lint_status(project_id: str, acting: str, phase: str, status: str, handoff_id: str) -> None:
+    """Record MAS.OUTPUT.UNKNOWN_STATUS when the reply's wire status is unknown."""
+    from core.engine.output_linter import check_unknown_status
+
+    findings = check_unknown_status(status, acting)
+    if not findings:
+        return
+    try:
+        from core.engine.event_recorder import EventRecorder
+
+        EventRecorder().record_simple(
+            project_id=project_id,
+            actor=acting,
+            action_type="output_lint",
+            intent=f"Unknown wire status on ingest handoff {handoff_id}",
+            phase=phase,
+            payload={"findings": findings, "handoff_id": handoff_id},
+        )
+    except Exception:
+        pass
+
+
+def _task_text(parsed, phase: str) -> str:
+    """Handoff task text: the wire summary, else rsn, else the old default.
+
+    The default says nothing about the work, so output_lint flags it.
+    """
+    wire = parsed.raw_wire or {}
+    for candidate in (wire.get("summary"), wire.get("sum"), parsed.reasoning):
+        if isinstance(candidate, str) and candidate.strip():
+            return " ".join(candidate.split())[:_TASK_TEXT_LIMIT]
+    return f"{phase} phase output (manual ingest)"
+
+
 def apply_ingest(
     project_id: str,
     raw: str,
@@ -233,7 +272,7 @@ def apply_ingest(
     Raises only if the primary handoff cannot be recorded (a delegation failure is
     captured non-fatally in IngestResult.delegate_error).
     """
-    from core.engine.response_parser import ResponseParser
+    from core.engine.response_parser import ResponseParser, status_ends_phase
     from core.engine.shared_state_manager import SharedStateManager
     from core.engine.handoff_engine import HandoffEngine
     from core.engine.orchestration_loop import OrchestrationLoop, LoopConfig, _next_phase
@@ -249,6 +288,16 @@ def apply_ingest(
     mode = wf.get("mode", "standard")
     loop = OrchestrationLoop(LoopConfig(project_id=project_id))
     acting = (normalize_agent_id(agent_id) or agent_id) if agent_id else loop._determine_next_agent(state)
+    if (
+        parsed.next_action == "advance_phase"
+        and "next_action" in parsed.raw_wire
+        and acting != "master_orchestrator"
+        and not status_ends_phase(parsed.status)
+    ):
+        # prop-004: only master_orchestrator may force an advance with a bare
+        # next_action; a worker must end its phase with a phase-ending status.
+        parsed.next_action = "wait"
+        parsed.parse_errors.append("advance_phase_requires_master_orchestrator")
     dispatch_verification = verify_manual_dispatch(
         project_id, acting, phase, dispatch_receipt
     )
@@ -314,9 +363,23 @@ def apply_ingest(
 
     # Record the agent's work as a governed handoff (master -> acting) and accept it.
     he = HandoffEngine()
+    # prop-002: an ingest against a dispatch answers the pending handoff that
+    # dispatch served, but only when the receipt names that very dispatch and
+    # passed verification.
+    served = dispatch_verification.get("served_handoff_id")
+    if not (
+        served
+        and dispatch_receipt
+        and str(dispatch_receipt.get("dispatch_id") or "")
+        == dispatch_verification.get("dispatch_id")
+        and dispatch_verification.get("accepted")
+        and he._is_pending(sm, served)
+    ):
+        served = None
     handoff = he.create(
         sm=sm, from_agent="master_orchestrator", to_agent=acting, phase=phase,
-        task_description=f"{phase} phase output (manual ingest)",
+        task_description=_task_text(parsed, phase),
+        answers_handoff=served,
         payload={
             "summary": parsed.reasoning or f"{acting} completed {phase}",
             "artifacts_produced": parsed.artifacts,
@@ -334,6 +397,9 @@ def apply_ingest(
     )
     hid = handoff.get("handoff_id", "")
     he.accept(sm=sm, handoff_id=hid)
+    _lint_status(project_id, acting, phase, parsed.status, hid)
+    if served:
+        he.complete(sm=sm, handoff_id=served, completed_by=hid)
     if dispatch_receipt:
         from core.engine.event_recorder import EventRecorder
 
@@ -435,6 +501,7 @@ def apply_ingest(
         parse_errors=list(parsed.parse_errors),
         knowledge_request=parsed.knowledge_request,
         dispatch_verification=dispatch_verification,
+        completed_handoff_id=served,
     )
 
     # Persist wire-protocol decisions and artifact references in the canonical

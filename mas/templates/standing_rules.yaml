@@ -1,0 +1,19 @@
+# Optional standing-rule register. Copy to <project>/governance/standing_rules.yaml.
+# Rules here are printed into the envelope of every agent in scope.
+rules:
+  - id: d-000/example            # the decision that set the rule, plus a slug
+    text: One line, at most 200 characters, stating the rule.
+    scope:
+      agents: [ml_engineer]      # or ["*"] for every agent
+      units: [W6, W7]            # optional: weeks or other units
+    check: review                # a test id, a grep pattern, or review
+    status: active               # active | retired
+    retired_by: null             # decision id, required when retired
+  - id: d-000/contract
+    text: The contract document every deliverable must follow.
+    scope: {agents: ["*"]}
+    check: review
+    status: active
+    retired_by: null
+    path: governance/contract.md
+    sha256: "<sha256 of the file>"

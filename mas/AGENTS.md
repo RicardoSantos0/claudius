@@ -138,6 +138,8 @@ mas status  <project-id>              # Current phase [lite], owner, pending han
 mas resume  <project-id>              # Resume summary + next action
 mas state   <project-id>              # Full shared state dump
 mas pending <project-id>              # Unresolved handoffs
+mas decide  <project-id> --value … --rationale … [--alternative …] [--related-to …]  # Record a decision in both stores (MCP: mas_decide)
+mas consistency <project-id> [--json]  # Store drift check; exits 1 on a finding above low severity
 mas snapshot <project-id>             # Snapshot state at current phase
 mas roster                            # All registered agents
 mas prompt  <project-id> [agent-id]   # Assemble agent prompt (manual surface mode)
@@ -158,7 +160,7 @@ When running projects through any manual surface (no API credits), enforce these
 steps to keep evaluation metrics meaningful:
 
 **Project memory file shapes (ip-001 / proj-YYYYMMDD-NNN):**
-- `decisions/decision_log.yaml` is a **flat YAML list** of decision entries (`[]` on init, never a dict). The SSM auto-flush (`_flush_decisions_to_disk`) reads and rewrites this file as a flat list. Legacy dict-shape files are tolerated on read for backward compatibility, but writes always normalize to the flat list form.
+- `decisions/decision_log.yaml` is a **flat YAML list** of decision entries (`[]` on init, never a dict). Every append to `decisions.decision_log` writes the file in the same call (write-through, `_flush_decisions_to_disk`) and appends the `decision_recorded` event under the key `mas sync` uses, so `mas sync --dry-run` adds none; the flush reads and rewrites the file as a flat list. If the file write fails, or the file is unreadable (a hand edit left invalid YAML), the append is undone and the error is raised, so a decision is in both stores or in neither; fix the file and append again. Editing either store by hand can still make them diverge. Legacy dict-shape files are tolerated on read for backward compatibility, but writes always normalize to the flat list form.
 
 **Before advancing to execution phase — HARD GATES (missing = 0 score):**
 - [ ] `project_definition.success_criteria` — at least 1 entry (from inquirer spec)
@@ -189,6 +191,9 @@ steps to keep evaluation metrics meaningful:
       "source": "claude_code_manual",
   })
   ```
+  The documented path is `mas decide <project-id> --value … --rationale … --alternative … --related-to …`
+  (MCP: `mas_decide`), which mints the next numeric id from the higher of both stores
+  and writes both. Do not edit `decision_log.yaml` or `shared_state.yaml` by hand.
 
 **After delivery — mark acceptance criteria met:**
   ```python
@@ -232,6 +237,60 @@ Standard-mode execution additionally requires a populated canonical task board.
 When `mas ingest` applies a valid transition, it snapshots the departing phase,
 updates `workflow.completed_phases`, and records one typed `phase_transition`
 event. Do not duplicate these mutations by hand.
+
+`task:complete` closes one handoff and leaves the phase where it is, because the
+parser maps it to `wait`. A phase advances only on `phase:complete`, on a named
+phase-ending status (`spec:ready`, `product_plan:ready`, `exec_plan:ready`,
+`eval:pass`, `eval:fail`, `scribe:recorded`, `ok`, `consult:approve`), or on an explicit
+`next_action: advance_phase` from `master_orchestrator`. A worker that sends
+`next_action: advance_phase` with a status that does not end a phase is held at
+`wait` and the parse error `advance_phase_requires_master_orchestrator` is
+reported. Any other status resolves to `wait`, and `output_lint` reports it.
+A lite project leaves intake the same way: the master orchestrator writes the
+collapsed intake and specification, then ingests as `master_orchestrator` with
+`s: "phase:complete"`.
+
+### Handoff ledger (prop-002)
+
+`mas prompt` records the pending handoff the dispatch serves: the oldest pending
+handoff addressed to that agent, or the one named with `--handoff-id` (MCP:
+`mas_prompt_envelope` `handoff_id`). `mas ingest --dispatch-id <id>` then marks the
+served handoff `completed`, with `completed_by_handoff` on it and `answers_handoff`
+on the new record. The new handoff's task text is the wire `summary`, else `rsn`,
+cut to 200 characters; the old default text appears only when the reply has
+neither, and `output_lint` flags it. An ingest without a dispatch receipt leaves
+every pending handoff untouched. `mas resume`, `mas status` and `CHECKPOINT.md`
+print a "Stale delegation" block for pending handoffs older than 14 days or older
+than the latest decision. `mas pending <project> --expire-older-than <days>`
+(MCP: `mas_pending` `expire_older_than_days`) sets `expired` with a reason and
+prints each handoff it touched; it never changes accepted or completed ones.
+
+### Dispatch guard and standing rules (prop-001, prop-012)
+
+`mas check-dispatch --agent-type <type> --prompt <text|-> [--cwd <dir>] [--surface <name>] [--json]`
+(MCP: `mas_check_dispatch`) decides whether launching a roster agent carries an
+engine dispatch. It blocks, with exit code 2, only when the type maps to a roster
+agent, the launch is governed, and the prompt names no engine dispatch for that
+project and agent (`dispatch <uuid>`, `dispatch_id: <uuid>`, `dispatch_id=<uuid>`
+or `"dispatch_id": "<uuid>"`). `MAS_BYPASS_DECISION=<id>`, naming a
+`user_authorized_bypass` decision in the project, turns a block into an override.
+
+A launch is governed when an active project opts in by listing directories in
+`project_definition.governed_paths` and the working directory, or a path in the
+prompt, lies under one. Only `master_orchestrator` writes that field; a project
+without it is never blocked. Governed launches append a line to the project's
+`logs/dispatch_guard.log`.
+
+The standing-rule register is an optional `governance/standing_rules.yaml` in the
+project directory; copy `mas/templates/standing_rules.yaml` to start one. Each rule
+has an `id` that starts with the decision that set it (or with its source name, such as
+`prose-craft/always`, when the rule comes from repository policy), a one-line `text` of at most
+200 characters, a `scope` (`agents`, optional `units`), a `check`, a `status` and,
+for a retired rule, the replacing decision in `retired_by`. A malformed register
+stops prompt assembly with an error. The envelope for each agent in scope gains a
+"Standing Rules" section listing every active in-scope rule id with its text; the
+text is cut at a size cap, the ids never are, and retired rules and rules scoped to
+other agents are not shown. A project with no register gets no section.
 
 ### Review-driven projects — re-baseline before planning (proj-008 / prop-008-004)
 

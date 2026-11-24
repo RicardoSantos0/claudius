@@ -652,8 +652,8 @@ class MetricsEngine:
         # Real handoffs use nested acceptance.status; test fixtures may use flat status
         accepted = [
             h for h in outgoing
-            if h.get("acceptance", {}).get("status") == "accepted"
-            or h.get("status") == "accepted"
+            if h.get("acceptance", {}).get("status") in ("accepted", "completed")
+            or h.get("status") in ("accepted", "completed")
         ]
         score = len(accepted) / len(outgoing) * 100.0
 

@@ -51,8 +51,10 @@ class ParsedResponse:
 # ---------------------------------------------------------------------------
 
 _STATUS_TO_ACTION: dict[str, str] = {
-    # Completion / advancement
-    "task:complete":        "advance_phase",
+    # task:complete means this handoff is done and the phase continues.
+    # Only the statuses below end a phase (prop-004).
+    "task:complete":        "wait",
+    "phase:complete":       "advance_phase",
     "spec:ready":           "advance_phase",
     "product_plan:ready":   "advance_phase",
     "exec_plan:ready":      "advance_phase",
@@ -70,6 +72,11 @@ _STATUS_TO_ACTION: dict[str, str] = {
     "escalate":             "escalate",
     "human_required":       "escalate",
 }
+
+
+def status_ends_phase(status: str) -> bool:
+    """True when the status itself, with no next_action, advances the phase."""
+    return _STATUS_TO_ACTION.get(status) == "advance_phase"
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +227,6 @@ class ResponseParser:
             return "wait"   # wait for knowledge injection before proceeding
         if "CONSULT" in upper and "consultation_trigger" in wire:
             return "consult"
-        if status.startswith("task:") or status.startswith("eval:") or status.startswith("scribe:"):
-            return "advance_phase"
         return "wait"
 
     def _extract_knowledge_request(self, text: str) -> dict | None:

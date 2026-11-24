@@ -132,6 +132,10 @@ If a criterion has no passing test, set `met: False` with a brief reason. The ev
 
 ---
 
+### 14. Standing-rule verdicts (prop-012)
+
+When your envelope has a "Standing Rules" section, the verification report lists every rule id in it with a verdict (`pass`, `fail` or `not applicable`) and its evidence: the test output, the grep result or the file and line you reviewed. Run each rule's `check` where it names a test or a pattern; where it says `review`, read the package against the rule text. A package whose report lacks an in-scope rule id is returned, not accepted. A `fail` verdict returns the package to its author with the rule id named.
+
 ## Non-Negotiables
 
 - **Test-first gate**: All acceptance criteria must have executable tests defined before implementation work begins
@@ -188,7 +192,7 @@ Include a `tasks_completed: [<task-id>, ...]` field in your handoff payload.
 All handoff payloads must include `_v` and `s` fields:
 ```yaml
 _v: "1.0"
-s: "task:complete"          # or phase:complete, scribe:recorded, etc.
+s: "task:complete"          # this handoff is done and the phase continues; phase:complete ends the phase
 art:
   - path/to/artifact.yaml   # omit if no artifacts
 rsn: >                       # optional, max 100 words

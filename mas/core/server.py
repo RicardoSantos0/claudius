@@ -68,6 +68,8 @@ def mas_status(project_id: str) -> str:
     ci = st.get("core_identity", {})
     wf = st.get("workflow", {})
     pending = [h for h in wf.get("handoff_history", []) if _is_pending(h)]
+    from core.engine.lifecycle_guard import stale_delegations
+
     return _yaml({
         "project_id": project_id,
         "phase": ci.get("current_phase"),
@@ -76,6 +78,7 @@ def mas_status(project_id: str) -> str:
         "owner": wf.get("current_owner"),
         "completed_phases": wf.get("completed_phases", []),
         "pending_handoffs": len(pending),
+        "stale_delegation": stale_delegations(st),
     })
 
 
@@ -93,15 +96,32 @@ def mas_state(project_id: str, path: str = "") -> str:
 
 
 @mcp.tool()
-def mas_pending(project_id: str) -> str:
-    """List pending handoffs for a project."""
+def mas_pending(project_id: str, expire_older_than_days: int = 0) -> str:
+    """List pending handoffs for a project.
+
+    With expire_older_than_days > 0, first sets status expired (with a reason) on
+    pending handoffs at least that old and lists what it expired, as `mas pending
+    --expire-older-than` does."""
+    expired: list[dict] = []
+    if expire_older_than_days > 0:
+        from core.engine.handoff_engine import HandoffEngine
+        from core.engine.lifecycle_guard import select_expirable_handoffs
+
+        engine, sm = HandoffEngine(), _sm(project_id)
+        reason = (f"expired by operator: pending {expire_older_than_days}+ days "
+                  f"with no answering handoff")
+        for h in select_expirable_handoffs(engine.get_all(sm), expire_older_than_days):
+            hid = h.get("handoff_id") or h.get("id")
+            if engine.expire(sm, hid, reason):
+                expired.append({"handoff_id": hid, "reason": reason})
     st = _sm(project_id).load()
     pending = [h for h in st.get("workflow", {}).get("handoff_history", []) if _is_pending(h)]
-    return _yaml([
+    listing = [
         {"handoff_id": h.get("handoff_id"), "from": h.get("from_agent"),
          "to": h.get("to_agent"), "task": h.get("task_description")}
         for h in pending
-    ])
+    ]
+    return _yaml({"expired": expired, "pending": listing} if expired else listing)
 
 
 @mcp.tool()
@@ -201,8 +221,12 @@ def mas_prompt_envelope(
     provider_catalog: str = "",
     available_models: str = "",
     excluded_models: str = "",
+    handoff_id: str = "",
 ) -> str:
-    """Return a structured provider-neutral manual execution envelope as YAML."""
+    """Return a structured provider-neutral manual execution envelope as YAML.
+
+    The dispatch serves a pending handoff: `handoff_id`, else the oldest pending one
+    addressed to the agent. Ingesting against the dispatch completes it."""
     from core.engine.agent_ids import normalize_agent_id
     from core.engine.execution_profile_router import (
         ExecutionProfileRouter,
@@ -248,10 +272,15 @@ def mas_prompt_envelope(
             or None
         ),
     )
+    from core.engine.handoff_engine import HandoffEngine
+
     router.record_route_selection(
         project_id,
         selection,
         prompt_metadata=assembler.last_prompt_metadata,
+        served_handoff_id=HandoffEngine().serving_handoff(
+            _sm(project_id), aid, handoff_id or None
+        ),
     )
     try:
         from core.db import record_prompt_estimate
@@ -933,6 +962,49 @@ def mas_state_append(project_id: str, agent_id: str, section: str, field: str, i
         parsed_item = item
     result = sm.append(agent_id, section, field, parsed_item)
     return f"OK: item appended to {section}.{field}." if result else f"DENIED: {getattr(result, 'reason', 'denied')}"
+
+
+@mcp.tool()
+def mas_decide(
+    project_id: str,
+    value: str,
+    rationale: str,
+    alternatives_considered: list[str] | None = None,
+    related_to: list[str] | None = None,
+    decision_id: str = "",
+) -> str:
+    """Record a decision in shared state and decisions/decision_log.yaml together.
+
+    The documented way to record a decision (parity with `mas decide`). The id is
+    minted from the higher of both stores unless given. Returns the id, plus a
+    warning when alternatives_considered or related_to is missing."""
+    sm = _get_sm(project_id)
+    if not sm.exists():
+        return f"Error: Project '{project_id}' not found."
+    entry, result = sm.record_decision(
+        value, rationale, alternatives_considered or [], related_to or [],
+        decision_id=decision_id or None,
+    )
+    if not result:
+        return f"DENIED: {getattr(result, 'reason', 'denied')}"
+    note = f" Warning: {result.guidance}" if result.guidance else ""
+    return f"OK: decision {entry['decision_id']} recorded in both stores.{note}"
+
+
+@mcp.tool()
+def mas_check_dispatch(agent_type: str, prompt: str = "", cwd: str = "", surface: str = "mcp") -> str:
+    """Decide whether launching a roster agent carries an engine dispatch (parity with `mas check-dispatch`).
+
+    Returns JSON with verdict (allow | block | override), reason, project_id, agent_id and, on a
+    block, the `mas prompt` command to run. A surface with no pre-launch hook calls this before
+    launching a roster agent. MAS_BYPASS_DECISION is read from the server environment."""
+    import json
+    import os
+
+    from core.engine.dispatch_guard import check_dispatch
+
+    decision = check_dispatch(agent_type, prompt, cwd or os.getcwd(), os.environ, surface=surface)
+    return json.dumps(dataclasses.asdict(decision))
 
 
 @mcp.tool()

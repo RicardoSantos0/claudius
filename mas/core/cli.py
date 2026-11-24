@@ -202,6 +202,29 @@ def _pending_handoffs_from_state(state: dict) -> list[dict]:
     return [h for h in history if _handoff_acceptance_status(h) == "pending"]
 
 
+def _serving_handoff(project_id: str, agent_id: str, explicit: str | None = None) -> str | None:
+    """Pending handoff a dispatch to `agent_id` serves (prop-002); a bad --handoff-id is an error."""
+    from core.engine.handoff_engine import HandoffEngine
+    from core.engine.shared_state_manager import SharedStateManager
+
+    sm = SharedStateManager(project_id)
+    if not sm.exists():
+        return None
+    try:
+        return HandoffEngine().serving_handoff(sm, agent_id, explicit)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _stale_block_lines(state: dict) -> list[str]:
+    from core.engine.lifecycle_guard import (
+        format_stale_delegation_block,
+        stale_delegations,
+    )
+
+    return format_stale_delegation_block(stale_delegations(state))
+
+
 def _assemble_prompt(
     project_id: str,
     agent_id: str,
@@ -1066,6 +1089,10 @@ def resume(project_id: str, show_prompt: bool):
     click.echo(f"  phase     : {phase}")
     click.echo(f"  pending   : {len(pending_handoffs)}")
 
+    stale_lines = _stale_block_lines(state)
+    if stale_lines:
+        click.echo("\n" + "\n".join(stale_lines))
+
     if pending_handoffs:
         click.echo("\nPending handoffs:")
         for h in pending_handoffs:
@@ -1204,6 +1231,9 @@ def status(project_id: str):
     if calls > 0:
         click.echo(f"Agent calls      : {calls}")
     click.echo(f"Tokens (total)   : {total_tok:,}")
+    stale_lines = _stale_block_lines(state)
+    if stale_lines:
+        click.echo("\n" + "\n".join(stale_lines))
     if pending_handoffs:
         click.echo("\nPending handoffs:")
         for h in pending_handoffs:
@@ -1230,8 +1260,15 @@ def status(project_id: str):
     default=False,
     help="Include explicit plan/board ID-alignment candidates; never writes.",
 )
-def consistency(project_id: str, repair_preview: bool):
-    """Check canonical stores and semantic plan/board identifier drift."""
+@click.option(
+    "--json", "as_json", is_flag=True, default=False,
+    help="Print the full report as one JSON line instead of the summary.",
+)
+def consistency(project_id: str, repair_preview: bool, as_json: bool):
+    """Check canonical stores and semantic plan/board identifier drift.
+
+    Exits 1 when a finding is above low severity; low advisories are printed only.
+    """
     _require_project(project_id)
     from core.engine.consistency_check import check_project
 
@@ -1243,7 +1280,84 @@ def consistency(project_id: str, repair_preview: bool):
     }
     if repair_preview:
         payload["repair_preview"] = report.repair_preview
-    click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    # Low-severity findings are advisories: printed, but they do not fail the gate.
+    blocking = [f for f in report.findings if f.get("severity") != "low"]
+    if as_json:
+        click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        click.echo(f"{project_id}: {'NOT OK' if blocking else 'ok'}, "
+                   f"{len(report.findings)} finding(s)")
+        for finding in report.findings:
+            label = finding.get("direction") or finding.get("check") or "finding"
+            ids = finding.get("ids") or finding.get("phases") or []
+            suffix = f" {', '.join(map(str, ids[:5]))}" if ids else ""
+            click.echo(f"  [{finding.get('severity', '?')}] {label}{suffix}: "
+                       f"{finding.get('detail', '')}")
+        if report.findings:
+            click.echo("Run with --json for the full report.")
+    if blocking:
+        sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# mas decide
+# ---------------------------------------------------------------------------
+
+@main.command("decide")
+@click.argument("project_id")
+@click.option("--value", required=True, help="The decision, stated once.")
+@click.option("--rationale", required=True, help="Why this was chosen.")
+@click.option("--alternative", "alternatives", multiple=True,
+              help="An option considered and not chosen. Repeat for several.")
+@click.option("--related-to", "related", multiple=True,
+              help="A decision or proposal this one follows from. Repeat for several.")
+@click.option("--id", "decision_id", default=None,
+              help="Decision id; default is the next numeric id over both stores.")
+def decide(project_id: str, value: str, rationale: str, alternatives: tuple,
+           related: tuple, decision_id: str | None):
+    """Record a decision in shared state and decisions/decision_log.yaml together."""
+    _require_project(project_id)
+    from core.engine.shared_state_manager import SharedStateManager
+
+    entry, result = SharedStateManager(project_id).record_decision(
+        value, rationale, list(alternatives), list(related), decision_id=decision_id
+    )
+    if not result:
+        click.echo(f"[error] decision not recorded: {result.reason}", err=True)
+        sys.exit(1)
+    click.echo(f"[ok] decision {entry['decision_id']} recorded in both stores")
+    if result.guidance:
+        click.echo(f"[warn] {result.guidance}", err=True)
+
+
+# ---------------------------------------------------------------------------
+# mas check-dispatch
+# ---------------------------------------------------------------------------
+
+@main.command("check-dispatch")
+@click.option("--agent-type", required=True,
+              help="Surface agent-type string; hyphen and underscore roster names both map.")
+@click.option("--prompt", default="", help="Launch prompt text; '-' reads stdin.")
+@click.option("--cwd", default=None, help="Working directory of the launch (default: current).")
+@click.option("--surface", default="cli", help="Surface name used in the suggested command.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the decision as JSON.")
+def check_dispatch_cmd(agent_type: str, prompt: str, cwd: str | None, surface: str, as_json: bool):
+    """Decide whether launching a roster agent carries an engine dispatch.
+
+    Exits 2 on a block so a surface's pre-launch hook can refuse the launch."""
+    import dataclasses
+
+    from core.engine.dispatch_guard import check_dispatch
+
+    if prompt == "-":
+        prompt = sys.stdin.read()
+    decision = check_dispatch(agent_type, prompt, cwd or os.getcwd(), os.environ, surface=surface)
+    if as_json:
+        click.echo(json.dumps(dataclasses.asdict(decision)))
+    else:
+        click.echo(f"[{decision.verdict}] {decision.reason}")
+    if decision.verdict == "block":
+        sys.exit(2)
 
 
 # ---------------------------------------------------------------------------
@@ -1277,17 +1391,28 @@ def state(project_id: str, path: str):
 
 @main.command()
 @click.argument("project_id")
-def pending(project_id: str):
+@click.option("--expire-older-than", "expire_days", type=click.IntRange(min=1), default=None,
+              help="Set status expired, with a reason, on pending handoffs at least "
+                   "this many days old. Prints each one; accepted and completed "
+                   "handoffs are never touched.")
+def pending(project_id: str, expire_days: int | None):
     """List all pending handoffs for a project.
 
     Example: mas pending proj-YYYYMMDD-NNN
     """
     _require_project(project_id)
     from core.engine.handoff_engine import HandoffEngine
+    from core.engine.lifecycle_guard import select_expirable_handoffs
     from core.engine.shared_state_manager import SharedStateManager
 
     sm = SharedStateManager(project_id)
     engine = HandoffEngine()
+    if expire_days is not None:
+        reason = f"expired by operator: pending {expire_days}+ days with no answering handoff"
+        for h in select_expirable_handoffs(engine.get_all(sm), expire_days):
+            hid = h.get("handoff_id") or h.get("id")
+            if engine.expire(sm, hid, reason):
+                click.echo(f"[expired] {hid} to {h.get('to_agent') or h.get('to')}: {reason}")
     pending_list = engine.get_pending(sm)
 
     if not pending_list:
@@ -1486,6 +1611,8 @@ def close(project_id: str):
         click.echo("[ok] Project closed.")
 
     # Reload state after writes and preserve final human/readable artifacts.
+    from core.engine.shared_state_manager import dump_yaml
+
     state = sm.load()
     closed_at = datetime.now(timezone.utc).isoformat()
     try:
@@ -1498,7 +1625,7 @@ def close(project_id: str):
     if retention.get("write_final_state_copy", True):
         final_state_path = sm.project_dir / "final_shared_state.yaml"
         with final_state_path.open("w", encoding="utf-8") as f:
-            yaml.dump(state, f, default_flow_style=False,
+            dump_yaml(state, f, default_flow_style=False,
                       allow_unicode=True, sort_keys=False)
         click.echo(f"[ok] Final state written: {final_state_path}")
 
@@ -2915,6 +3042,13 @@ def run(
     multiple=True,
     help="Model excluded by the active client/plan; repeat as needed.",
 )
+@click.option(
+    "--handoff-id",
+    "handoff_id",
+    default=None,
+    help="Pending handoff this dispatch serves (default: the oldest pending one "
+         "addressed to the agent). Ingesting against the dispatch completes it.",
+)
 def prompt(
     project_id: str,
     agent_id: str | None,
@@ -2929,6 +3063,7 @@ def prompt(
     provider_catalog: str | None,
     available_models: tuple[str, ...],
     excluded_models: tuple[str, ...],
+    handoff_id: str | None,
 ):
     """Assemble and print the next agent's prompt for manual/provider-neutral mode.
 
@@ -2995,6 +3130,7 @@ def prompt(
         project_id,
         selection,
         prompt_metadata=prompt_metadata,
+        served_handoff_id=_serving_handoff(project_id, agent_id, handoff_id),
     )
     if as_json:
         envelope = build_manual_envelope(
@@ -3221,6 +3357,7 @@ def ingest(
         project_id,
         selection,
         prompt_metadata=prompt_metadata,
+        served_handoff_id=_serving_handoff(project_id, nxt),
     )
     _emit_prompt(
         project_id,

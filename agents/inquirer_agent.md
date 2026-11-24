@@ -153,7 +153,7 @@ markitdown automatically when a document file is in play.
 All handoff payloads must include `_v` and `s` fields:
 ```yaml
 _v: "1.0"
-s: "phase:complete"         # or task:complete, scribe:recorded, etc.
+s: "phase:complete"         # ends the phase; task:complete would only close this handoff
 art:
   - path/to/artifact.yaml   # omit if no artifacts
 rsn: >                       # optional, max 100 words

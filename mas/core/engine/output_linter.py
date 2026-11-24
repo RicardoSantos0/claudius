@@ -18,6 +18,8 @@ LINT_MISSING_WIRE = "MAS.OUTPUT.MISSING_WIRE"
 LINT_TOO_MANY_SECTIONS = "MAS.OUTPUT.TOO_MANY_SECTIONS"
 LINT_REPEATS_POLICY = "MAS.OUTPUT.REPEATS_POLICY"
 LINT_RSN_TOO_LONG = "MAS.OUTPUT.RSN_TOO_LONG"
+LINT_UNKNOWN_STATUS = "MAS.OUTPUT.UNKNOWN_STATUS"
+LINT_DEFAULT_TASK_TEXT = "MAS.HANDOFF.DEFAULT_TASK_TEXT"
 
 _POLICY_PHRASES = [
     "wire protocol",
@@ -55,6 +57,7 @@ class OutputLinter:
         findings.extend(self._check_too_many_sections(output, agent_id))
         findings.extend(self._check_repeats_policy(output, agent_id))
         findings.extend(self._check_rsn_length(output, agent_id))
+        findings.extend(self._check_unknown_status(output, agent_id))
 
         return LintResult(passed=len(findings) == 0, findings=findings)
 
@@ -95,6 +98,37 @@ class OutputLinter:
                 return [{"code": LINT_RSN_TOO_LONG, "agent": agent_id,
                          "detail": f"rsn is {words} words (threshold: {self._max_rsn_words})"}]
         return []
+
+    def _check_unknown_status(self, output: str, agent_id: str) -> list[dict]:
+        """Report a wire status the parser does not know; it resolves to wait.
+
+        Reads the last status in the text, the wire block the parser uses.
+        """
+        matches = re.findall(r'"s"\s*:\s*"([^"]*)"', output)
+        return check_unknown_status(matches[-1], agent_id) if matches else []
+
+
+def check_unknown_status(status: str, agent_id: str = "") -> list[dict]:
+    if status and not is_known_status(status):
+        return [{"code": LINT_UNKNOWN_STATUS, "agent": agent_id,
+                 "detail": f"Unknown status {status!r} resolves to wait"}]
+    return []
+
+
+def is_known_status(status: str) -> bool:
+    from core.engine.response_parser import _STATUS_TO_ACTION
+    from core.utils.wire_protocol import STATUS_CODES
+
+    return status in _STATUS_TO_ACTION or status in STATUS_CODES
+
+
+def check_default_task_text(task_description: str, handoff_id: str = "") -> list[dict]:
+    """Flag the literal fallback task text that says nothing about the work."""
+    if re.fullmatch(r"\w+ phase output \(manual ingest\)", task_description or ""):
+        return [{"code": LINT_DEFAULT_TASK_TEXT, "handoff_id": handoff_id,
+                 "detail": "Handoff task text is the ingest default; "
+                           "the reply carried neither summary nor rsn"}]
+    return []
 
 
 def check_wire_compliance(payload: dict) -> tuple[float, list[str]]:

@@ -177,6 +177,8 @@ You MAY override an HR recommendation only if:
 - **Phase batching**: When delegating a phase to `project_manager_agent`, send all tasks for that phase in a SINGLE handoff — do not send one handoff per task. This reduces overhead and keeps handoff history clean.
 - **PM↔ProjM replan loop**: If `project_manager_agent` returns a handoff with status `task:blocked` carrying a `product_plan_infeasibility` blocker_alert, do NOT push it forward to execution. Route the critique **back to `product_manager_agent`** (phase `planning`, task "Revise product plan to resolve infeasibility: <requirement>") so the plan is corrected, then re-delegate to `project_manager_agent`. This is the documented Plan-Critique-Refine feedback loop — the Project Manager surfaces infeasibility, the Product Manager (who owns WHAT/WHY) re-scopes, and you mediate. Keep it on the formal handoff protocol; the two planners never coordinate directly.
 - **Live handoff before work**: A formal handoff record MUST be created and accepted BEFORE any agent begins execution on a phase. Retroactive handoffs after-the-fact are a governance violation. If a phase was executed without a prior handoff, file a retroactive record flagged with `retroactive: true` and count it against record integrity.
+- **Ledger discipline (prop-002, prop-014)**: Dispatch each delegated agent with `mas prompt <project> <agent>` and ingest with `--dispatch-id`; that completes the pending handoff the dispatch served, so no delegated handoff is left pending after its work is ingested. Record decisions with `mas decide` (or `mas_decide`), never by editing `shared_state.yaml` or `decisions/decision_log.yaml`. On resume, read the Stale delegation block first and complete, expire (`mas pending <project> --expire-older-than <days>`) or re-delegate each entry.
+- **Standing rules (prop-012)**: When a decision sets or retires a standing rule, add or retire that rule in the project's `governance/standing_rules.yaml` in the same step as `mas decide`. The rule id starts with the decision id, or with its source name (for example `prose-craft/always`) when the rule comes from repository policy rather than a project decision, and a retired rule names the replacing decision in `retired_by`.
 
 ## Delivery Verification Protocol — MANDATORY
 
@@ -396,6 +398,8 @@ if not SharedStateManager.can_write("master_orchestrator", "some.field"):
 
 **Policy reference:** This requirement is codified and binding in [policies/governance_policy.yaml](policies/governance_policy.yaml) under the `master_orchestrator_mandate` section. Amendments to that mandate require explicit human approval.
 
+**Probation evidence (prop-001).** Until release 1 installed a dispatch guard, a roster agent could be launched with no engine dispatch, which is how an October 2026 drift in a governed project (proj-YYYYMMDD-NNN) happened. Evidence that withdraws a boundary-adherence probation flag on this ground is a governed project whose `logs/dispatch_guard.log` shows every roster launch as `allow` with a matching dispatch receipt in route telemetry, or as `override` backed by a `user_authorized_bypass` decision recorded before the launch, and no blocked launch followed by unrecorded work.
+
 ## Starting a New Project
 When a user gives you a project brief:
 
@@ -461,12 +465,14 @@ Master output requirements:
 All handoff payloads must include `_v` and `s` fields:
 ```yaml
 _v: "1.0"
-s: "task:complete"          # or phase:complete, eval:report_ready, etc.
+s: "task:complete"          # this handoff is done and the phase continues; phase:complete ends the phase
 art:
   - path/to/artifact.yaml   # omit if no artifacts
 rsn: >                       # optional, max 100 words
   One-sentence reason.
 ```
+`task:complete` closes one handoff and leaves the phase where it is. To advance a phase send `s: "phase:complete"`, or set `next_action: "advance_phase"` yourself as master_orchestrator. Workers cannot advance a phase with a bare `next_action`. Statuses the parser does not know resolve to `wait` and the linter reports them.
+
 Omit empty lists and null fields. Human-facing text (CHECKPOINT.md, project summaries) uses prose — wire format is for agent-to-agent payloads only.
 
 **Decision quality fields** (include these to score above 70 on `decision_quality` metric):
@@ -497,6 +503,16 @@ When invoked directly through Claude Code rather than live `mas run`, do manual 
 5. Apply the wire response through `mas ingest` with `--dispatch-id`,
    `--reported-provider`, `--reported-model`, and `--verification-source`.
    Do not mutate state directly in place of ingestion.
+6. Never launch a roster agent through a client agent tool (for example the
+   Claude Code Agent tool) without an engine dispatch. Run
+   `uv run mas prompt <project> <agent> --surface <surface> --json`, send the
+   returned prompt, and put its `dispatch <uuid>` in the launch prompt. The
+   dispatch guard (`mas/core/engine/dispatch_guard.py`, `mas check-dispatch`,
+   `mas_check_dispatch`) refuses a roster launch inside a governed project that
+   lacks a matching id. The only exception is a recorded
+   `user_authorized_bypass` decision named in `MAS_BYPASS_DECISION`; do not set
+   that variable without the user's explicit instruction, and never work around
+   a block by renaming the agent type or doing the work in the parent.
 
 Selection is not execution proof. Client/operator reports are attestations;
 only provider-reported model identity is verification.
@@ -542,7 +558,7 @@ mas ingest <project_id> --agent inquirer_agent \
 }
 ```
 
-- `next_action`: `"delegate"` | `"advance_phase"` | `"consult"` | `"escalate"` | `"wait"`
+- `next_action`: `"delegate"` | `"advance_phase"` (master_orchestrator only, or with a phase-ending status) | `"consult"` | `"escalate"` | `"wait"`
 - `next_agent`: agent_id to delegate to (only when `next_action == "delegate"`)
 - `consultation_trigger`: include when a governance decision needs panel review (the loop
   will run all relevant consultants and inject the synthesis into your next prompt)

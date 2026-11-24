@@ -185,9 +185,11 @@ class HandoffEngine:
         payload: dict,
         authorized_by: str = "master_orchestrator",
         token_usage: Optional[dict] = None,
+        answers_handoff: Optional[str] = None,
     ) -> dict:
         """
         Create a new handoff record and write it to shared state.
+        `answers_handoff` names the pending handoff this record answers (prop-002).
         Returns the handoff dict.
         """
         default_status = (
@@ -228,6 +230,9 @@ class HandoffEngine:
                 "accepted_at": None,
             },
         }
+
+        if answers_handoff:
+            handoff["answers_handoff"] = answers_handoff
 
         _warn_missing_tasks_completed(from_agent, payload)
 
@@ -321,20 +326,20 @@ class HandoffEngine:
 
         # Lint handoff summary for verbosity/compliance (non-fatal, never blocks)
         try:
-            from core.engine.output_linter import OutputLinter
+            from core.engine.output_linter import OutputLinter, check_default_task_text
             from core.engine.event_recorder import EventRecorder
             summary = payload.get("summary", "")
+            findings = list(check_default_task_text(task_description, handoff_id))
             if summary:
-                lint_result = OutputLinter().lint(summary, agent_id=from_agent)
-                if lint_result.findings:
-                    EventRecorder().record_simple(
-                        project_id=sm.project_id,
-                        actor=from_agent,
-                        action_type="output_lint",
-                        intent=f"Lint check on handoff {handoff_id} summary",
-                        payload={"findings": lint_result.findings,
-                                 "handoff_id": handoff_id},
-                    )
+                findings += OutputLinter().lint(summary, agent_id=from_agent).findings
+            if findings:
+                EventRecorder().record_simple(
+                    project_id=sm.project_id,
+                    actor=from_agent,
+                    action_type="output_lint",
+                    intent=f"Lint check on handoff {handoff_id} summary",
+                    payload={"findings": findings, "handoff_id": handoff_id},
+                )
         except Exception as exc:
             logger.debug("wire-lint event recording failed (non-blocking): %s", exc)
 
@@ -373,7 +378,8 @@ class HandoffEngine:
     # --- ACCEPT / REJECT ---
 
     def _update_handoff_in_state(self, sm: SharedStateManager,
-                                  handoff_id: str, updates: dict) -> bool:
+                                  handoff_id: str, updates: dict,
+                                  extra: Optional[dict] = None) -> bool:
         """Find the handoff in history and update its acceptance record.
         Handles both expanded (handoff_id) and compact (id) keys."""
         state = sm.load()
@@ -395,14 +401,16 @@ class HandoffEngine:
                         h["fq"] = updates["follow_up_questions"]
                     if updates.get("accepted_at"):
                         h["aat"] = updates["accepted_at"]
+                if extra:
+                    h.update(extra)
                 found = True
                 break
         if not found:
             return False
-        import yaml as _yaml
+        from core.engine.shared_state_manager import dump_yaml
         with open(sm.state_path, "w", encoding="utf-8") as f:
-            _yaml.dump(state, f, default_flow_style=False,
-                       allow_unicode=True, sort_keys=False)
+            dump_yaml(state, f, default_flow_style=False,
+                      allow_unicode=True, sort_keys=False)
         return True
 
     def accept(self, sm: SharedStateManager, handoff_id: str,
@@ -519,6 +527,73 @@ class HandoffEngine:
             except Exception as exc:
                 logger.debug("reject event recording failed (non-blocking): %s", exc)
         return ok
+
+    # --- COMPLETE / EXPIRE (prop-002) ---
+
+    def _is_pending(self, sm: SharedStateManager, handoff_id: str) -> bool:
+        handoff = self.get(sm, handoff_id)
+        status = ((handoff or {}).get("acceptance") or {}).get("status")
+        return status == "pending"
+
+    def complete(self, sm: SharedStateManager, handoff_id: str,
+                 completed_by: str) -> bool:
+        """Mark a pending handoff completed by the handoff that answered it."""
+        if not self._is_pending(sm, handoff_id):
+            return False
+        ok = self._update_handoff_in_state(
+            sm, handoff_id,
+            {"status": "completed",
+             "completed_at": datetime.now(timezone.utc).isoformat()},
+            extra={"completed_by_handoff": completed_by},
+        )
+        if ok:
+            try:
+                from core.engine.event_recorder import EventRecorder
+                EventRecorder().record_simple(
+                    project_id=sm.project_id,
+                    actor="system",
+                    action_type="handoff_completed",
+                    intent=f"{handoff_id} completed by {completed_by}",
+                    payload={"handoff_id": handoff_id,
+                             "completed_by_handoff": completed_by},
+                )
+            except Exception as exc:
+                logger.debug("complete event recording failed (non-blocking): %s", exc)
+        return ok
+
+    def expire(self, sm: SharedStateManager, handoff_id: str, reason: str) -> bool:
+        """Set a pending handoff to expired with a reason. Never touches other statuses."""
+        if not self._is_pending(sm, handoff_id):
+            return False
+        return self._update_handoff_in_state(
+            sm, handoff_id, {"status": "expired"},
+            extra={"expired_at": datetime.now(timezone.utc).isoformat(),
+                   "expiry_reason": reason},
+        )
+
+    def serving_handoff(self, sm: SharedStateManager, agent_id: str,
+                        explicit: Optional[str] = None) -> Optional[str]:
+        """The pending handoff a dispatch to `agent_id` serves.
+
+        The oldest pending handoff addressed to the agent, or `explicit` when
+        given. An explicit id that is unknown, not pending or addressed to
+        another agent raises ValueError: pairing the wrong handoff would close
+        live work.
+        """
+        if explicit:
+            handoff = self.get(sm, explicit)
+            if handoff is None:
+                raise ValueError(f"handoff {explicit} not found")
+            if not self._is_pending(sm, explicit):
+                raise ValueError(f"handoff {explicit} is not pending")
+            if handoff.get("to_agent") != agent_id:
+                raise ValueError(
+                    f"handoff {explicit} is addressed to {handoff.get('to_agent')}, "
+                    f"not {agent_id}"
+                )
+            return explicit
+        pending = self.get_pending(sm, to_agent=agent_id)
+        return pending[0]["handoff_id"] if pending else None
 
     # --- QUERY ---
 

@@ -54,7 +54,9 @@ uv run mas status $PROJECT_ID
 uv run mas pending $PROJECT_ID
 ```
 
-Cross-check with the checkpoint. If there are pending handoffs, they take priority.
+Read the "Stale delegation" block first, in the checkpoint and in the `mas status` output. It lists pending handoffs older than 14 days or older than the latest decision, with their age and the number of decisions recorded since. For each entry ask the master to complete it (record the work that answered it with `mas prompt` and `mas ingest --dispatch-id`, which closes the served handoff), expire it (`uv run mas pending $PROJECT_ID --expire-older-than <days>`), or re-delegate it. Do not accept a stale handoff as live work without that choice.
+
+Cross-check with the checkpoint. Pending handoffs that are not stale take priority.
 
 **Step 4 — Resume as master_orchestrator**
 

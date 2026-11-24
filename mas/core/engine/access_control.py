@@ -56,6 +56,7 @@ ACCESS_CONTROL: dict[str, dict] = {
     "project_definition.risk_classification":     {"write": ["product_manager_agent", "master_orchestrator"]},
     "project_definition.priority":                {"write": ["product_manager_agent", "master_orchestrator"]},
     "project_definition.target_area":             {"write": ["master_orchestrator"]},
+    "project_definition.governed_paths":          {"write": ["master_orchestrator"]},
 
     # === WORKFLOW ===
     "workflow.active_agents":       {"write": ["master_orchestrator"]},

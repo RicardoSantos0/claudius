@@ -201,6 +201,16 @@ class CheckpointWriter:
         else:
             lines += ["_No pending handoffs._", ""]
 
+        # Stale delegation (prop-002)
+        from core.engine.lifecycle_guard import (
+            format_stale_delegation_block,
+            stale_delegations,
+        )
+
+        stale_lines = format_stale_delegation_block(stale_delegations(state))
+        if stale_lines:
+            lines += ["## Stale Delegation", "", *stale_lines, ""]
+
         # Delivery risks
         if risks:
             lines += ["## Active Delivery Risks", ""]
